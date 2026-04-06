@@ -28,27 +28,29 @@ The project focuses on:
 
 ### Main library and playback
 
-!\[Library view](docs/screenshots/library.png)
+![Library view](docs/screenshots/library.png)
 
-!\[Playlist view](docs/screenshots/playlist.png)
+![Playlist view](docs/screenshots/playlist.png)
 
-!\[Favorites view](docs/screenshots/favorites.png)
+![Favorites view](docs/screenshots/favorites.png)
 
 ### Audio shaping and ambient workflow
 
-!\[Equalizer page](docs/screenshots/equalizer.png)
+![Equalizer page](docs/screenshots/equalizer.png)
 
-!\[Effects page](docs/screenshots/effects.png)
+![Effects page](docs/screenshots/effects.png)
 
-!\[Ambient page](docs/screenshots/ambient.png)
+![Visualizer page](docs/screenshots/visualizer.png)
+
+![Ambient page](docs/screenshots/ambient.png)
 
 ### Visualizer, settings, and video runtime
 
-!\[Detached visualizer window](docs/screenshots/visualizer-external.png)
+![Detached visualizer window](docs/screenshots/visualizer-external.png)
 
-!\[Settings page in English](docs/screenshots/settings.png)
+![Settings page](docs/screenshots/setting.png)
 
-!\[External video window](docs/screenshots/video-window.png)
+![External video window](docs/screenshots/video-window.png)
 
 
 
@@ -76,7 +78,7 @@ Additional terms under **GPLv3 section 7** also apply. In short, redistributed a
 * mark modified versions as **modified / unofficial** in a reasonable and visible way;
 * avoid using the **WaveHelm** name, branding, or the author's name to imply official status or endorsement without separate permission.
 
-The full wording is provided in [`GPL\_SECTION7\_ADDITIONAL\_TERMS.md`](GPL_SECTION7_ADDITIONAL_TERMS.md). WaveHelm already preserves authorship through the About / Info view and through accessible legal-notices material shipped with the application.
+The full wording is provided in [`GPL\\\_SECTION7\\\_ADDITIONAL\\\_TERMS.md`](GPL_SECTION7_ADDITIONAL_TERMS.md). WaveHelm already preserves authorship through the About / Info view and through accessible legal-notices material shipped with the application.
 
 ## Maintained feature set
 
@@ -263,23 +265,23 @@ The footer mini-player remains active across the shell.
 * Video playback depends on **Windows COM** and **Media Foundation**.
 * The current build uses an **external-only** video host instead of an embedded in-app video page.
 * Audio and subtitle track selection live in **Settings** instead of a dedicated video page.
-* DSP-enabled playback can render processed copies into a `processed\_audio` cache.
+* DSP-enabled playback can render processed copies into a `processed\\\_audio` cache.
 * The visualizer can run either embedded in the page or in a detached window.
 * Library, Playlist, and Favorites can keep the active item visually highlighted while playback continues elsewhere in the shell.
 
 ## Data, logs, exports, and persistence
 
-On Windows, WaveHelm stores runtime data under `%APPDATA%\\WaveHelm`.
+On Windows, WaveHelm stores runtime data under `%APPDATA%\\\\WaveHelm`.
 Typical files and folders include:
 
 * `settings.json` for user settings
 * `wavehelm.db` for the SQLite persistence layer used by library, playlists, favorites, presets, and related runtime data
-* `logs\\wavehelm.log` for application logs
-* `processed\_audio\\` for DSP-rendered playback cache files
-* `ambient mix saved\\` for WAV files exported from the Ambient page
-* `effects saved\\` for WAV files exported from the Effects page
-* `exports\\wavehelm\_app\_info.json` for metadata exported from the About page
-* `licenses\\` for the runtime third-party notices bundle
+* `logs\\\\wavehelm.log` for application logs
+* `processed\\\_audio\\\\` for DSP-rendered playback cache files
+* `ambient mix saved\\\\` for WAV files exported from the Ambient page
+* `effects saved\\\\` for WAV files exported from the Effects page
+* `exports\\\\wavehelm\\\_app\\\_info.json` for metadata exported from the About page
+* `licenses\\\\` for the runtime third-party notices bundle
 
 Persistence includes:
 
@@ -324,7 +326,7 @@ Quick path:
 
 ```powershell
 python -m venv .venv
-.venv\\Scripts\\Activate.ps1
+.venv\\\\Scripts\\\\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python main.py
