@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    path TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    duration REAL NOT NULL,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+);

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Manuel utilisateur WaveHelm</title>
+  <meta name="description" content="Guide de référence des fonctions maintenues, des contrôles et des outils runtime disponibles dans WaveHelm.">
+</head>
+<body>
+  <h1>Manuel utilisateur WaveHelm</h1>
+  <p class="meta">WaveHelm · version 1.0 · lecteur multimédia de bureau pour Windows</p>
+  <p class="lead">WaveHelm est un lecteur multimédia pour Windows orienté vers une lecture réactive, la gestion des médias locaux, les outils de traitement audio, la lecture ambient et une chaîne vidéo basée sur Media Foundation. Ce manuel décrit les fonctions maintenues par l'interface wx actuelle.</p>
+
+  <section>
+    <h2>Vue d'ensemble</h2>
+    <p>WaveHelm réunit lecture audio et vidéo locale, bibliothèque persistante, playlists, favoris, égaliseur, effets DSP, lecture ambient, visualiseur temps réel, outils de maintenance et manuel intégré localisé. La build actuelle est conçue pour Windows et utilise une fenêtre vidéo externe pour la lecture vidéo.</p>
+  </section>
+
+  <section>
+    <h2>Sections principales de l'application</h2>
+    <ul>
+      <li><strong>Bibliothèque :</strong> importe des fichiers ou des dossiers, recherche dans le catalogue, filtre par type de média, trie les entrées, lance la lecture, ajoute les éléments sélectionnés aux favoris, supprime des éléments de la bibliothèque et garde la ligne du fichier en cours de lecture mise en évidence.</li>
+      <li><strong>Playlist :</strong> crée ou supprime des playlists, ajoute des fichiers ou des dossiers à la playlist sélectionnée, supprime les pistes choisies, rouvre des collections enregistrées, mémorise la largeur des colonnes et met en évidence la piste en cours de lecture.</li>
+      <li><strong>Favoris :</strong> rouvre rapidement les éléments enregistrés, supprime les favoris sélectionnés, actualise la vue, sélectionne tous les favoris visibles et garde la ligne active mise en évidence.</li>
+      <li><strong>Égaliseur :</strong> active ou désactive l'EQ, ajuste les bandes disponibles, sélectionne des presets intégrés, enregistre ou supprime des presets personnalisés, rétablit la courbe Flat et ouvre le dossier d'audio traité.</li>
+      <li><strong>Effets :</strong> configure l'écho, la réverbération et le filtre vintage, enregistre la configuration actuelle des effets, réinitialise tous les effets, exporte la session audio traitée en WAV et ouvre directement le dossier d'export.</li>
+      <li><strong>Visualizer :</strong> démarre ou arrête le spectre, choisit le nombre de bandes, utilise le graphique intégré, ouvre une fenêtre visualizer détachée et place cette fenêtre en plein écran avec F11.</li>
+      <li><strong>Ambient :</strong> actualise la bibliothèque ambient, ouvre le dossier ambient, sélectionne un fichier ambient, le lit ou l'arrête indépendamment de la file principale, ajuste le volume ambient, coupe le son de la couche ambient et enregistre le mix en WAV.</li>
+      <li><strong>Paramètres :</strong> change la langue, le thème et le volume général ; choisit la piste audio et les sous-titres vidéo quand la session active les expose ; ouvre les dossiers runtime ; et exécute les actions de maintenance.</li>
+      <li><strong>Readmi :</strong> ouvre le manuel intégré dans la langue courante et avec le thème actif.</li>
+      <li><strong>About :</strong> affiche l'identité du produit, les modules activés, les bibliothèques utilisées, les contacts et exporte les métadonnées de l'application en JSON.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Démarrage rapide</h2>
+    <ol>
+      <li>Ouvre <strong>Bibliothèque</strong> et importe un ou plusieurs fichiers ou dossiers locaux.</li>
+      <li>Sélectionne un élément et démarre la lecture.</li>
+      <li>Utilise le mini-player du pied de page pour lecture, pause, arrêt, précédent, suivant, seek, shuffle, loop, mute et volume.</li>
+      <li>Ouvre <strong>Égaliseur</strong>, <strong>Effets</strong> ou <strong>Ambient</strong> pour modeler la session.</li>
+      <li>Ouvre <strong>Visualizer</strong> si tu veux une vue spectrale en direct ou une fenêtre détachée en plein écran.</li>
+      <li>Ouvre <strong>Paramètres</strong> pour la langue, le thème, les pistes vidéo, les dossiers et la maintenance.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Mini-player et comportement de lecture</h2>
+    <p>Le mini-player du pied de page reste disponible dans toute la shell wx maintenue. Il affiche le titre courant, l'état de lecture, la barre de progression, le temps écoulé, la durée totale et les contrôles de transport principaux.</p>
+    <ul>
+      <li><strong>Lecture, pause, arrêt, précédent, suivant :</strong> contrôles standard pour la file courante.</li>
+      <li><strong>Seek :</strong> fais glisser ou clique sur la barre de progression pour te déplacer dans l'élément courant.</li>
+      <li><strong>Shuffle et loop :</strong> activent la lecture aléatoire ou répétée.</li>
+      <li><strong>Volume et mute :</strong> règlent la sortie générale depuis le mini-player ou la page Paramètres.</li>
+      <li><strong>Changement rapide :</strong> WaveHelm est conçu pour passer rapidement entre éléments audio et vidéo au cours de la même session.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Bibliothèque, playlists et favoris</h2>
+    <p>La couche de persistance enregistre les références des médias importés et permet de rouvrir le catalogue entre les sessions.</p>
+    <ul>
+      <li>La page <strong>Bibliothèque</strong> prend en charge la recherche, le tri, le filtrage par type de média, la lecture directe, l'ajout aux favoris, la suppression depuis la bibliothèque et la mémorisation de la largeur des colonnes.</li>
+      <li>La page <strong>Playlist</strong> sépare la gestion des playlists et des pistes, afin de maintenir des collections nommées dans le temps, avec des boutons pour ajouter des fichiers individuels ou des dossiers entiers à la playlist sélectionnée.</li>
+      <li>La page <strong>Favoris</strong> est destinée à l'accès rapide aux médias sélectionnés sans refaire une recherche dans tout le catalogue et inclut une action de sélection globale.</li>
+      <li>Bibliothèque, Playlist et Favoris peuvent mettre en évidence avec une couleur dédiée la ligne du fichier en cours de lecture, afin que l'élément actif reste visible même après des changements de navigation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Égaliseur, effets et audio traité</h2>
+    <ul>
+      <li>La page <strong>Égaliseur</strong> expose le flux maintenu des bandes et des presets. Les presets personnalisés peuvent être enregistrés et supprimés depuis la même page.</li>
+      <li>Au redémarrage de l'application, le preset de démarrage de l'égaliseur revient volontairement sur <strong>Flat</strong> au lieu de restaurer le nom du dernier preset sélectionné.</li>
+      <li>La page <strong>Égaliseur</strong> peut aussi ouvrir le dossier <code>processed_audio</code> utilisé par les assets de lecture rendus via DSP.</li>
+      <li>La page <strong>Effets</strong> couvre actuellement l'écho, la réverbération et le filtre vintage.</li>
+      <li>Une action <strong>Enregistrer les réglages</strong> conserve la configuration actuelle des effets, tandis que <strong>Réinitialiser tous les effets</strong> restaure l'état de base maintenu.</li>
+      <li>Le bouton <strong>Enregistrer l'audio</strong> de la page Effets exporte la piste audio courante avec les effets actifs appliqués dans un fichier <code>.wav</code>.</li>
+      <li>Le bouton adjacent <strong>Ouvrir le dossier enregistré</strong> ouvre directement le dossier par défaut <code>%APPDATA%\WaveHelm\effects saved</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Visualizer</h2>
+    <ul>
+      <li>Le visualizer peut fonctionner dans la page ou dans une fenêtre externe détachée.</li>
+      <li>Tu peux changer le nombre de bandes du spectre depuis les contrôles du visualizer.</li>
+      <li>La fenêtre détachée prend en charge le mode <strong>plein écran</strong> via le bouton dédié ou la touche <strong>F11</strong>.</li>
+      <li>Si le backend graphique préféré n'est pas disponible, WaveHelm utilise un rendu de compatibilité plus simple au lieu de laisser la page vide.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Lecture ambient</h2>
+    <p>La section ambient est séparée de la file principale. Tu peux garder actif un son ambient, un fichier parlé ou une superposition musicale indépendamment de la piste principale quand ton flux de travail l'exige.</p>
+    <ul>
+      <li>Utilise <strong>Actualiser</strong> pour reconstruire la liste ambient après avoir ajouté ou supprimé des fichiers dans le dossier ambient.</li>
+      <li>Utilise <strong>Ouvrir le dossier</strong> pour accéder directement au répertoire source des fichiers ambient.</li>
+      <li>La lecture ambient dispose de son propre contrôle de <strong>volume</strong> et de son propre interrupteur <strong>mute</strong>.</li>
+      <li><strong>Enregistrer le mix</strong> exporte la session courante plus la superposition ambient sélectionnée dans un fichier <code>.wav</code>.</li>
+      <li><strong>Ouvrir le dossier du mix</strong> ouvre directement le dossier par défaut <code>%APPDATA%\WaveHelm\ambient mix saved</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Comportement vidéo et sélection des pistes</h2>
+    <ul>
+      <li>La build actuelle utilise une <strong>fenêtre vidéo externe</strong> pour la lecture vidéo.</li>
+      <li>La lecture vidéo dépend de la pile Windows <strong>Media Foundation</strong> et de l'intégration COM associée.</li>
+      <li>Les sélecteurs de <strong>piste audio vidéo</strong> et de <strong>piste de sous-titres</strong> se trouvent dans <strong>Paramètres</strong> et se remplissent lorsque la session active expose des options compatibles.</li>
+      <li>Si une vidéo s'ouvre sans son audible, vérifie d'abord le codec et privilégie AAC quand une compatibilité large est nécessaire.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Paramètres, maintenance et About</h2>
+    <p>La page Paramètres centralise les préférences utilisateur, les dossiers runtime et les actions de maintenance.</p>
+    <ul>
+      <li>Change la <strong>langue</strong> et le <strong>thème</strong>.</li>
+      <li>Ajuste le <strong>volume général</strong> persistant.</li>
+      <li>Ouvre le <strong>dossier de données de l'application</strong>, le dossier <strong>processed audio</strong>, les <strong>logs</strong> et le bundle des <strong>avis/licences tiers</strong>.</li>
+      <li>Nettoie le <strong>cache audio traité</strong> lorsqu'aucune session audio active ne l'utilise.</li>
+      <li>Demande le nettoyage des artefacts runtime généraux comme le cache et le contenu des logs.</li>
+      <li>La page <strong>About</strong> liste la version, l'auteur, la licence, la plateforme cible, le site web, les modules activés, les bibliothèques utilisées et les informations de contact.</li>
+      <li>La page <strong>About</strong> peut exporter les métadonnées vers <code>%APPDATA%\WaveHelm\exports\wavehelm_app_info.json</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Persistance des données et dossiers runtime</h2>
+    <p>Sous Windows, WaveHelm enregistre les données runtime sous <code>%APPDATA%\WaveHelm</code>.</p>
+    <ul>
+      <li><code>settings.json</code> enregistre les paramètres utilisateur.</li>
+      <li><code>wavehelm.db</code> enregistre les données SQLite utilisées par la bibliothèque, les playlists, les favoris, les presets et l'état runtime associé.</li>
+      <li><code>logs\wavehelm.log</code> enregistre les journaux de l'application.</li>
+      <li><code>processed_audio\</code> enregistre les fichiers de cache rendus via DSP.</li>
+      <li><code>ambient mix saved\</code> enregistre les fichiers WAV exportés depuis la page Ambient.</li>
+      <li><code>effects saved\</code> enregistre les fichiers WAV exportés depuis la page Effets.</li>
+      <li><code>exports\wavehelm_app_info.json</code> enregistre les métadonnées exportées depuis la page About.</li>
+      <li><code>licenses\</code> enregistre le bundle runtime des avis/licences de tiers.</li>
+    </ul>
+    <p>Les paramètres, playlists, favoris, presets EQ personnalisés, volume général et largeurs de colonnes sont destinés à persister entre les sessions.</p>
+  </section>
+
+  <section>
+    <h2>Formats pris en charge et limites actuelles</h2>
+    <ul>
+      <li>WaveHelm fonctionne au mieux avec les médias que l'installation Windows actuelle peut décoder via Media Foundation.</li>
+      <li>La build actuelle n'inclut pas de décodeur interne pour l'audio <strong>AC-3</strong>, <strong>E-AC-3</strong> ou <strong>TrueHD</strong>.</li>
+      <li><strong>AAC</strong> reste le choix le plus fiable pour une compatibilité large dans cette build.</li>
+      <li><code>ffprobe</code>, lorsqu'il est disponible dans le <code>PATH</code>, peut améliorer certains chemins de détection de durée et de métadonnées.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Notes opérationnelles</h2>
+    <ul>
+      <li>WaveHelm est orienté Windows et la branche vidéo dépend de composants Windows.</li>
+      <li>L'interface wx est le runtime UI maintenu.</li>
+      <li>La page Readmi est localisée et suit le thème actif, c'est pourquoi les fichiers du manuel sont conservés séparément du README à la racine du dépôt.</li>
+    </ul>
+  </section>
+</body>
+</html>

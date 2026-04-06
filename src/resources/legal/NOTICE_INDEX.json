@@ -1,0 +1,99 @@
+{
+  "packages": {
+    "wxPython": {
+      "license_family": "wxWindows Library Licence 3.1 (wxWidgets/wxPython)",
+      "baseline_license_texts": [
+        "wxWindows-Library-Licence-3.1.txt"
+      ],
+      "notes": [
+        "wxPython is published under the wxWindows Library Licence and remains part of the maintained runtime stack.",
+        "Freeze the exact wheel version selected for release and archive any upstream notice files bundled with that wheel."
+      ]
+    },
+    "pygame": {
+      "license_family": "LGPL-2.1",
+      "baseline_license_texts": [
+        "LGPL-2.1.txt"
+      ],
+      "notes": []
+    },
+    "numpy": {
+      "license_family": "Mixed permissive SPDX set on current project metadata",
+      "baseline_license_texts": [
+        "BSD-3-Clause.txt",
+        "MIT.txt"
+      ],
+      "notes": [
+        "Capture the exact bundled notices from the selected wheel, as NumPy may ship multiple permissive notice files."
+      ]
+    },
+    "scipy": {
+      "license_family": "BSD + bundled compatible notices",
+      "baseline_license_texts": [
+        "BSD-3-Clause.txt"
+      ],
+      "notes": [
+        "Capture the exact bundled notices from the wheel or source distribution selected for release."
+      ]
+    },
+    "soundfile": {
+      "license_family": "BSD-3-Clause wrapper + LGPL libsndfile dependency",
+      "baseline_license_texts": [
+        "BSD-3-Clause.txt",
+        "LGPL-2.1.txt"
+      ],
+      "notes": [
+        "Keep both wrapper and libsndfile notices in the final package."
+      ]
+    },
+    "tinytag": {
+      "license_family": "MIT (current major line)",
+      "baseline_license_texts": [
+        "MIT.txt"
+      ],
+      "notes": [
+        "Requirements pin tinytag==2.2.1 to a specific MIT-licensed release and avoid the older GPL-tagged 0.x line on PyPI."
+      ]
+    },
+    "Pillow": {
+      "license_family": "MIT-CMU",
+      "baseline_license_texts": [
+        "MIT-CMU.txt"
+      ],
+      "notes": []
+    },
+    "opencv-python": {
+      "license_family": "Apache-2.0 + bundled LGPL-compatible notices",
+      "baseline_license_texts": [
+        "Apache-2.0.txt",
+        "LGPL-2.1.txt"
+      ],
+      "notes": [
+        "Keep the exact wheel notices because FFmpeg and other bundled components can vary by wheel build."
+      ]
+    },
+    "matplotlib": {
+      "license_family": "PSF-based matplotlib license",
+      "baseline_license_texts": [
+        "PSF-2.0.txt"
+      ],
+      "notes": [
+        "Keep the matplotlib license text in the redistributed package."
+      ]
+    },
+    "pywin32": {
+      "license_family": "PSF",
+      "baseline_license_texts": [
+        "PSF-2.0.txt"
+      ],
+      "notes": []
+    },
+    "comtypes": {
+      "license_family": "MIT",
+      "baseline_license_texts": [
+        "MIT.txt"
+      ],
+      "notes": []
+    }
+  }
+}

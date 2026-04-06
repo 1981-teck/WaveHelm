@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WaveHelm User Manual</title>
+  <meta name="description" content="Reference guide for the maintained features, controls, and runtime tools available in WaveHelm.">
+</head>
+<body>
+  <h1>WaveHelm User Manual</h1>
+  <p class="meta">WaveHelm · version 1.0 · Windows desktop media player</p>
+  <p class="lead">WaveHelm is a Windows media player focused on responsive playback, local media management, audio shaping tools, ambient playback, and a Media Foundation based video path. This manual describes the maintained functions exposed by the current wx interface.</p>
+
+  <section>
+    <h2>At a glance</h2>
+    <p>WaveHelm combines local audio and video playback with a persistent library, playlists, favorites, equalizer controls, DSP effects, ambient playback, a real-time visualizer, maintenance tools, and a localized in-app manual. The current build is designed for Windows and uses an external video window for video playback.</p>
+  </section>
+
+  <section>
+    <h2>Main sections of the application</h2>
+    <ul>
+      <li><strong>Library:</strong> import files or folders, search the catalog, filter by media type, sort entries, play the selection, add selected items to favorites, remove items from the library, and keep the currently playing row highlighted.</li>
+      <li><strong>Playlist:</strong> create or delete playlists, add files or folders to the selected playlist, remove selected tracks, reopen saved collections, remember table column widths, and highlight the currently playing track.</li>
+      <li><strong>Favorites:</strong> play saved items quickly, remove selected favorites, refresh the view, select all visible favorites, and keep the active row highlighted.</li>
+      <li><strong>Equalizer:</strong> enable or disable EQ, adjust the available frequency bands, select built-in presets, save or delete custom presets, reset the curve to Flat, and open the processed audio folder.</li>
+      <li><strong>Effects:</strong> configure echo, reverb, and vintage filter parameters, save the current effect settings, reset all effects, export the current processed audio session to WAV, and open the export folder directly from the page.</li>
+      <li><strong>Visualizer:</strong> start or stop the spectrum display, choose the band count, use the embedded plot, open a detached visualizer window, and switch that detached window to fullscreen with F11.</li>
+      <li><strong>Ambient:</strong> refresh the ambient library, open the ambient folder, select an ambient file, play or stop it independently from the main queue, adjust ambient volume, mute the ambient layer, export the mixed session to WAV, and open the mix folder.</li>
+      <li><strong>Settings:</strong> change language, theme, and master volume; choose active video audio and subtitle tracks when a compatible video session is active; open app folders; and run maintenance cleanup actions.</li>
+      <li><strong>Readmi:</strong> open the built-in user manual in the current language and theme.</li>
+      <li><strong>About:</strong> review product identity, enabled modules, libraries used, contact information, and export application metadata to JSON.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Quick start</h2>
+    <ol>
+      <li>Open <strong>Library</strong> and import one or more local files or folders.</li>
+      <li>Select an item and start playback.</li>
+      <li>Use the footer mini-player for play, pause, stop, previous, next, seek, shuffle, loop, mute, and volume.</li>
+      <li>Open <strong>Equalizer</strong>, <strong>Effects</strong>, or <strong>Ambient</strong> to shape the session.</li>
+      <li>Open <strong>Visualizer</strong> if you want a live spectrum view or a detached fullscreen visualizer window.</li>
+      <li>Open <strong>Settings</strong> for language, theme, video track selection, folders, and maintenance tasks.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Mini-player and playback behavior</h2>
+    <p>The footer mini-player stays available across the maintained wx shell. It exposes the current track title, playback state, progress bar, elapsed time, total duration, and the primary transport controls.</p>
+    <ul>
+      <li><strong>Play, pause, stop, previous, next:</strong> standard transport controls for the current queue.</li>
+      <li><strong>Seek:</strong> drag or click the progress control to move through the current item.</li>
+      <li><strong>Shuffle and loop:</strong> toggle randomized or repeated playback behavior.</li>
+      <li><strong>Volume and mute:</strong> adjust the master output directly from the mini-player or the settings page.</li>
+      <li><strong>Fast switching:</strong> WaveHelm is designed to move quickly between audio and video items in the same session.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Library, playlists, and favorites</h2>
+    <p>The persistence layer stores imported media references and lets you reopen your catalog between sessions.</p>
+    <ul>
+      <li>The <strong>Library</strong> page supports search, sorting, media-type filtering, direct playback, add-to-favorites actions, removal from the library, and remembered column widths.</li>
+      <li>The <strong>Playlist</strong> page separates playlist management from track management so you can maintain named collections over time, with buttons to add individual files or whole folders to the selected playlist.</li>
+      <li>The <strong>Favorites</strong> page is intended for fast access to selected media without searching the full catalog again and includes a select-all action for visible rows.</li>
+      <li>Library, Playlist, and Favorites can highlight the currently playing row with a dedicated color so the active item stays visible even after navigation changes.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Equalizer, effects, and processed audio</h2>
+    <ul>
+      <li>The <strong>Equalizer</strong> page exposes the maintained band controls and preset workflow. Custom presets can be saved and deleted from the page.</li>
+      <li>At application restart, the equalizer startup preset is intentionally reset to <strong>Flat</strong> instead of restoring the last selected preset name.</li>
+      <li>The <strong>Equalizer</strong> page can also open the <code>processed_audio</code> folder used by DSP-rendered playback assets.</li>
+      <li>The <strong>Effects</strong> page currently covers echo, reverb, and vintage filter controls.</li>
+      <li>A <strong>Save settings</strong> action stores the current effect configuration, while <strong>Reset all effects</strong> restores the maintained baseline state.</li>
+      <li>A <strong>Save audio</strong> button in the Effects page exports the current audio track with the active effects applied as a <code>.wav</code> file.</li>
+      <li>The adjacent <strong>Open saved folder</strong> button opens the default <code>%APPDATA%\WaveHelm\effects saved</code> folder directly.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Visualizer</h2>
+    <ul>
+      <li>The visualizer can run inside the page or in a detached external window.</li>
+      <li>You can change the number of displayed spectrum bands from the visualizer controls.</li>
+      <li>The detached window supports <strong>fullscreen</strong> mode with the dedicated button or <strong>F11</strong>.</li>
+      <li>If the preferred plotting backend is unavailable, WaveHelm falls back to a simpler compatibility renderer instead of leaving the page empty.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Ambient playback</h2>
+    <p>The ambient section is separate from the main playback queue. You can keep an ambient sound, spoken-word file, or music overlay running independently from the main track when your workflow calls for it.</p>
+    <ul>
+      <li>Use <strong>Refresh</strong> to rebuild the ambient list after adding or removing files from the ambient folder.</li>
+      <li>Use <strong>Open folder</strong> to jump directly to the ambient source directory.</li>
+      <li>Ambient playback has its own <strong>volume</strong> control and <strong>mute</strong> toggle.</li>
+      <li><strong>Save mix</strong> exports the current session plus the selected ambient overlay to a <code>.wav</code> file.</li>
+      <li><strong>Open mix folder</strong> opens the default <code>%APPDATA%\WaveHelm\ambient mix saved</code> folder directly.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Video behavior and track selection</h2>
+    <ul>
+      <li>The current build uses an <strong>external video window</strong> for video playback.</li>
+      <li>Video playback depends on the Windows <strong>Media Foundation</strong> stack and related COM integration.</li>
+      <li>The active <strong>video audio track</strong> and <strong>subtitle track</strong> selectors are available in <strong>Settings</strong> and populate when the active session exposes compatible options.</li>
+      <li>If a video opens but has no audible sound, verify the codec first and prefer AAC when broad compatibility is required.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Settings, maintenance, and About</h2>
+    <p>The settings page centralizes user preferences, runtime folders, and maintenance actions.</p>
+    <ul>
+      <li>Change the current <strong>language</strong> and <strong>theme</strong>.</li>
+      <li>Adjust the persistent <strong>master volume</strong>.</li>
+      <li>Open the <strong>app data folder</strong>, <strong>processed audio folder</strong>, <strong>logs</strong>, and <strong>third-party notices</strong>.</li>
+      <li>Clear the <strong>processed audio cache</strong> when no active audio session is using it.</li>
+      <li>Request cleanup of general runtime artifacts such as cache and log content.</li>
+      <li>The <strong>About</strong> page lists version, author, license, target platform, website, enabled modules, libraries used, and contact information.</li>
+      <li>The <strong>About</strong> page can export metadata to <code>%APPDATA%\WaveHelm\exports\wavehelm_app_info.json</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Data persistence and runtime folders</h2>
+    <p>On Windows, WaveHelm stores runtime data under <code>%APPDATA%\WaveHelm</code>.</p>
+    <ul>
+      <li><code>settings.json</code> stores user settings.</li>
+      <li><code>wavehelm.db</code> stores the SQLite data used for library, playlists, favorites, presets, and related runtime state.</li>
+      <li><code>logs\wavehelm.log</code> stores application logs.</li>
+      <li><code>processed_audio\</code> stores DSP-rendered playback cache files.</li>
+      <li><code>ambient mix saved\</code> stores WAV files exported from the Ambient page.</li>
+      <li><code>effects saved\</code> stores WAV files exported from the Effects page.</li>
+      <li><code>exports\wavehelm_app_info.json</code> stores metadata exported from the About page.</li>
+      <li><code>licenses\</code> stores the runtime third-party notices bundle.</li>
+    </ul>
+    <p>Settings, playlists, favorites, custom EQ presets, master volume, and table column widths are intended to persist across sessions.</p>
+  </section>
+
+  <section>
+    <h2>Supported formats and current limits</h2>
+    <ul>
+      <li>WaveHelm works best with media that the current Windows installation can decode through Media Foundation.</li>
+      <li>The current build does not include an internal decoder for <strong>AC-3</strong>, <strong>E-AC-3</strong>, or <strong>TrueHD</strong>.</li>
+      <li><strong>AAC</strong> remains the most reliable choice for broad compatibility in this build.</li>
+      <li><code>ffprobe</code>, when available in <code>PATH</code>, can improve some duration and metadata probing paths.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Operational notes</h2>
+    <ul>
+      <li>WaveHelm is a Windows-oriented product and the video branch depends on Windows components.</li>
+      <li>The wx interface is the maintained UI runtime.</li>
+      <li>The Readmi page is localized and theme-aware, so its resource files are stored separately from the repository root README.</li>
+    </ul>
+  </section>
+</body>
+</html>

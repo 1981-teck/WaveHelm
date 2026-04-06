@@ -1,0 +1,48 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE files
+.vscode/
+.idea/
+
+# Runtime data generated outside tests
+logs/
+processed_audio/
+ambient mix saved/
+effects saved/
+exports/
+licenses/
+wavehelm.db
+settings.json
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Windows package and release artifacts
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+*.appinstaller
+*.exe
+*.zip
+
+# Local release capture folders
+release/
+artifacts/
+

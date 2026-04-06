@@ -1,0 +1,14 @@
+include LICENSE
+include README.md
+include requirements.txt
+include THIRD_PARTY_LICENSE_AUDIT.md
+recursive-include docs *.md
+recursive-include ambient_sounds *
+recursive-include src/resources/manual *
+include THIRD_PARTY_NOTICES.md
+recursive-include src/resources/legal *
+
+include INSTALL_WINDOWS.md
+include AUTHORS
+include ROADMAP.md
+include GPL_SECTION7_ADDITIONAL_TERMS.md

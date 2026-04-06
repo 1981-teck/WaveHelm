@@ -1,0 +1,32 @@
+{
+  "Sala Live": {
+    "eq": { "60Hz": 4, "250Hz": 2, "1kHz": 3, "4kHz": 5, "16kHz": 6 },
+    "effects": { "echo": true, "reverb": true, "vintage": false },
+    "description": "Suono brillante e profondo, ideale per concerti live."
+  },
+  "Caffè Jazz": {
+    "eq": { "60Hz": 2, "250Hz": 4, "1kHz": 5, "4kHz": 3, "16kHz": 1 },
+    "effects": { "echo": false, "reverb": true, "vintage": true },
+    "description": "Timbro dolce e soffuso, come ascoltare un trio jazz dal vivo."
+  },
+  "Garage Rock": {
+    "eq": { "60Hz": 6, "250Hz": 3, "1kHz": 2, "4kHz": 4, "16kHz": 2 },
+    "effects": { "echo": true, "reverb": false, "vintage": true },
+    "description": "Sound sporco e diretto, come un live indie underground."
+  },
+  "Pioggia Leggera": {
+    "eq": { "60Hz": 0, "250Hz": 0, "1kHz": 0, "4kHz": 0, "16kHz": 0 },
+    "effects": { "echo": false, "reverb": true, "vintage": false },
+    "description": "Suono rilassante di pioggia leggera."
+  },
+  "Foresta Notturna": {
+    "eq": { "60Hz": -2, "250Hz": 0, "1kHz": 1, "4kHz": 2, "16kHz": 0 },
+    "effects": { "echo": true, "reverb": true, "vintage": false },
+    "description": "Atmosfera calma con suoni di animali notturni."
+  },
+  "Onde del Mare": {
+    "eq": { "60Hz": 3, "250Hz": 1, "1kHz": -1, "4kHz": -2, "16kHz": -3 },
+    "effects": { "echo": true, "reverb": true, "vintage": false },
+    "description": "Suono distensivo delle onde che si infrangono sulla spiaggia."
+  }
+}

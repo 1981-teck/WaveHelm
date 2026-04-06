@@ -1,0 +1,12 @@
+{
+    "volume": 65,
+    "language": "it",
+    "theme": "Dark",
+    "primary_color": "green",
+    "video_hw_accel_enabled": false,
+    "video_drop_late_frames": true,
+    "video_frame_queue_size": 7,
+    "video_decode_threads": 2,
+    "video_fast_seek": false,
+    "video_resize_quality_high": true
+}

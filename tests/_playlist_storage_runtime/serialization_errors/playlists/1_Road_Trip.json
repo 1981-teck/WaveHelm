@@ -1,0 +1,9 @@
+{
+  "id": 1,
+  "name": "Road Trip",
+  "description": "desc",
+  "creation_date": "2024-01-01",
+  "last_modified": "2024-01-02",
+  "tracks": [
+    {
+      "payload": 

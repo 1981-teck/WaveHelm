@@ -1,0 +1,10 @@
+{
+  "default_language": "en",
+  "content_type": "text/html",
+  "manuals": {
+    "en": "wavehelm_user_manual.en.html",
+    "it": "wavehelm_user_manual.it.html",
+    "es": "wavehelm_user_manual.es.html",
+    "fr": "wavehelm_user_manual.fr.html"
+  }
+}

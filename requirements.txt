@@ -1,0 +1,14 @@
+# Core UI and media runtime
+wxPython==4.2.5
+pygame==2.6.1
+numpy==2.4.4
+scipy==1.17.0
+soundfile==0.13.1
+tinytag==2.2.1
+Pillow==12.2.0
+opencv-python==4.13.0.92
+matplotlib==3.10.8
+
+# Windows-only native/video integration
+pywin32==311; platform_system == "Windows"
+comtypes==1.4.16; platform_system == "Windows"

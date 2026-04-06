@@ -1,0 +1,34 @@
+{
+  "general": {
+    "app_name": "WaveHelm",
+    "organization_name": "WaveHelm",
+    "version": "1.0",
+    "author": "Pastoris Marco Vincenzo",
+    "license": "GNU GPL v3.0 or later (with Section 7 additional terms)",
+    "website_url": "https://1981-teck.github.io/M.V.SoundSystem/",
+    "target_platform": "Windows"
+  },
+  "modules_enabled": [
+    "multiband_equalizer",
+    "dsp_effects",
+    "custom_ambient_presets",
+    "playlist_history_management",
+    "integrated_video_playback"
+  ],
+  "libraries_used": [
+    "wxpython",
+    "pygame",
+    "numpy_scipy_dsp",
+    "soundfile_audio_io",
+    "sqlite3_database",
+    "opencv_video_playback",
+    "pillow_image_processing",
+    "audio_metadata_reader",
+    "matplotlib_plotting",
+    "comtypes",
+    "pywin32"
+  ],
+  "contact": {
+    "email": "mvsoundsystem81@gmail.com"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "stats": {
+    "plays": 3
+  },
+  "effects_settings": {
+    "echo": {
+      "enabled": true
+    }
+  },
+  "eq_settings": {
+    "band_gains": {
+      "60": 2.5
+    }
+  },
+  "custom_eq_presets": {
+    "Rock": {
+      "60": 3.0
+    }
+  },
+  "custom_effects_settings": {
+    "Wide": {
+      "reverb": true
+    }
+  },
+  "home_stats_prefs": {
+    "show_plays": true
+  }
+}
