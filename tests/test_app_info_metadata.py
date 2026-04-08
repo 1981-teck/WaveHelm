@@ -25,7 +25,11 @@ def test_app_info_uses_current_stack_metadata():
     assert general.get("organization_name") == "WaveHelm"
     assert general.get("target_platform") == "Windows"
     assert general.get("license") == "GNU GPL v3.0 or later (with Section 7 additional terms)"
-    assert general.get("website_url") == "https://1981-teck.github.io/M.V.SoundSystem/"
+    assert general.get("website_url") == "https://1981-teck.github.io/WaveHelm/"
+    assert general.get("privacy_policy_url") == "https://1981-teck.github.io/WaveHelm/privacy-policy.html"
+    assert general.get("license_url") == "https://1981-teck.github.io/WaveHelm/license-terms.html"
+    assert general.get("source_code_url") == "https://1981-teck.github.io/WaveHelm/source-code-and-licenses.html"
+    assert app_info.get("contact", {}).get("support_url") == "https://1981-teck.github.io/WaveHelm/support.html"
     assert "github_url" not in general
     assert "wxpython" in libraries
     assert "pygame" in libraries

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-labelledby="title desc">
+  <title id="title">WaveHelm icon</title>
+  <desc id="desc">Rounded blue-green icon with audio wave bars and a helm motif.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7cc4ff"/>
+      <stop offset="100%" stop-color="#8ff0d5"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="104" height="104" rx="28" fill="#111831"/>
+  <rect x="12" y="12" width="96" height="96" rx="24" fill="url(#bg)" opacity="0.18"/>
+  <g fill="url(#bg)">
+    <rect x="28" y="48" width="10" height="24" rx="5"/>
+    <rect x="44" y="38" width="10" height="44" rx="5"/>
+    <rect x="60" y="28" width="10" height="64" rx="5"/>
+    <rect x="76" y="40" width="10" height="40" rx="5"/>
+  </g>
+  <path d="M22 86c10 8 22 12 38 12 16 0 30-4 40-12" fill="none" stroke="#edf2ff" stroke-width="6" stroke-linecap="round" opacity="0.9"/>
+  <circle cx="60" cy="86" r="6" fill="#edf2ff"/>
+</svg>

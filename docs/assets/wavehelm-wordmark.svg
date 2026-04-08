@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 180" role="img" aria-labelledby="title desc">
+  <title id="title">WaveHelm wordmark</title>
+  <desc id="desc">WaveHelm wordmark with icon and product subtitle.</desc>
+  <defs>
+    <linearGradient id="wm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7cc4ff"/>
+      <stop offset="100%" stop-color="#8ff0d5"/>
+    </linearGradient>
+  </defs>
+  <rect width="820" height="180" rx="36" fill="#0f162d"/>
+  <g transform="translate(28 30)">
+    <rect x="0" y="0" width="120" height="120" rx="28" fill="url(#wm)" opacity="0.18"/>
+    <g fill="url(#wm)">
+      <rect x="24" y="48" width="10" height="24" rx="5"/>
+      <rect x="40" y="38" width="10" height="44" rx="5"/>
+      <rect x="56" y="28" width="10" height="64" rx="5"/>
+      <rect x="72" y="40" width="10" height="40" rx="5"/>
+    </g>
+    <path d="M18 86c12 8 24 12 40 12 16 0 29-4 40-12" fill="none" stroke="#edf2ff" stroke-width="6" stroke-linecap="round" opacity="0.9"/>
+    <circle cx="58" cy="86" r="6" fill="#edf2ff"/>
+  </g>
+  <text x="178" y="84" fill="#edf2ff" font-size="58" font-family="Inter, Segoe UI, Arial, sans-serif" font-weight="700">WaveHelm</text>
+  <text x="180" y="118" fill="#b5c0e0" font-size="24" font-family="Inter, Segoe UI, Arial, sans-serif">Windows desktop media player</text>
+</svg>

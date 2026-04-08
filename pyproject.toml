@@ -29,7 +29,9 @@ classifiers = [
 dynamic = ["dependencies"]
 
 [project.urls]
-Homepage = "https://1981-teck.github.io/M.V.SoundSystem/"
+Homepage = "https://1981-teck.github.io/WaveHelm/"
+Source = "https://github.com/1981-teck/WaveHelm"
+Documentation = "https://1981-teck.github.io/WaveHelm/source-code-and-licenses.html"
 
 [project.scripts]
 wavehelm = "main:main"

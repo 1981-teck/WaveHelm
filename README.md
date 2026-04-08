@@ -24,6 +24,20 @@ The project focuses on:
 * **Repository model:** source-first public repository
 * **Planned convenience distribution:** possible future Microsoft Store release, handled separately from this repository baseline
 
+## Public project website
+
+This repository now includes a GitHub Pages-ready public site in `docs/`.
+
+Planned public URLs after enabling GitHub Pages:
+
+* **Home:** `https://1981-teck.github.io/WaveHelm/`
+* **Privacy policy:** `https://1981-teck.github.io/WaveHelm/privacy-policy.html`
+* **Applicable license terms:** `https://1981-teck.github.io/WaveHelm/license-terms.html`
+* **Source code and licenses:** `https://1981-teck.github.io/WaveHelm/source-code-and-licenses.html`
+* **Support:** `https://1981-teck.github.io/WaveHelm/support.html`
+
+To publish it, enable GitHub Pages from **main** → **/docs**.
+
 ## Screenshots
 
 ### Main library and playback

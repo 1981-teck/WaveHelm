@@ -7,7 +7,7 @@ from typing import Any, Mapping
 APP_NAME_FALLBACK = "WaveHelm"
 APP_VERSION_FALLBACK = "1.0"
 APP_TARGET_PLATFORM_FALLBACK = "Windows"
-APP_WEBSITE_URL_FALLBACK = "https://1981-teck.github.io/M.V.SoundSystem/"
+APP_WEBSITE_URL_FALLBACK = "https://1981-teck.github.io/WaveHelm/"
 APP_AUTHOR_FALLBACK = "Pastoris Marco Vincenzo"
 APP_LICENSE_FALLBACK = "GNU GPL v3.0 or later (with Section 7 additional terms)"
 
