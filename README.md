@@ -41,6 +41,12 @@ To publish it, enable GitHub Pages from **main** → **/docs**.
 ## Screenshots
 
 ### Main library and playback
+![Library View](docs/images/library_view.png) · ![Playlist View](docs/images/playlist_view.png) · ![Favorites View](docs/images/favorites_view.png)
+
+### Audio shaping and ambient workflow
+![Equalizer Page](docs/images/equalizer_page.png)
+
+### Main library and playback
 
 ![Library view](docs/screenshots/library.png)
 
