@@ -17,7 +17,6 @@ from src.ui_wx.collection_view_support import (
 )
 from src.ui_wx.common import (
     WX_CALLBACK_EXCEPTIONS,
-    apply_colors,
     autosize_choice_control,
     create_flow_sizer,
     format_duration,
@@ -25,13 +24,15 @@ from src.ui_wx.common import (
     set_view_feedback,
     subscribe_event,
     get_localized_text,
-    get_theme_colors,
-    persist_listctrl_column_widths,
     register_callback,
-    restore_listctrl_column_widths,
     set_label_text,
-    set_listctrl_column_label,
-    unregister_callback,
+)
+from src.ui_wx.view_presentation_support import (
+    apply_collection_view_theme,
+    persist_column_width_groups,
+    release_view_lifecycle,
+    restore_column_width_groups,
+    set_translated_column_labels,
 )
 
 logger = logging.getLogger(__name__)
@@ -282,59 +283,46 @@ class LibraryView:
         set_label_text(self.remove_button, self._t('tooltip_remove', 'Remove selected'))
 
     def _set_column_labels(self) -> None:
-        columns = getattr(self.table, 'columns', None)
-        for index, (name, key) in enumerate(self.COLUMN_KEYS):
-            label = self._t(key, name.title())
-            set_listctrl_column_label(self.table, index, label)
+        set_translated_column_labels(self.table, self.COLUMN_KEYS, self._t)
+
+    def _column_width_groups(self) -> tuple[tuple[object, str, int], ...]:
+        return ((self.table, self.COLUMN_WIDTHS_SETTING_KEY, len(self.COLUMN_KEYS)),)
 
     def _restore_column_widths(self) -> None:
-        restore_listctrl_column_widths(
-            self.table,
-            self.settings_manager,
-            self.COLUMN_WIDTHS_SETTING_KEY,
-            len(self.COLUMN_KEYS),
-        )
+        restore_column_width_groups(self.settings_manager, self._column_width_groups())
 
     def _persist_column_widths(self) -> None:
-        persist_listctrl_column_widths(
-            self.table,
-            self.settings_manager,
-            self.COLUMN_WIDTHS_SETTING_KEY,
-            len(self.COLUMN_KEYS),
-        )
+        persist_column_width_groups(self.settings_manager, self._column_width_groups())
 
     def _on_table_column_resized(self, _event: Any) -> None:
         self._persist_column_widths()
 
 
     def update_theme_colors(self, *_: Any) -> None:
-        colors = get_theme_colors(self.theme_manager)
-        background = colors.get('panel_bg') or colors.get('bg_color')
-        foreground = colors.get('text_color')
-        accent = colors.get('button_color') or background
-        apply_colors(self.panel, background=background, foreground=foreground)
-        for widget in (
-            self.title_label,
-            self.search_label,
-            self.search_text,
-            self.filter_label,
-            self.filter_choice,
-            self.sort_label,
-            self.sort_choice,
-            self.table,
-            self.status_label,
-            self.feedback_label,
-        ):
-            apply_colors(widget, background=background, foreground=foreground)
-        for button in (
-            self.add_files_button,
-            self.add_folder_button,
-            self.refresh_button,
-            self.play_button,
-            self.favorite_button,
-            self.remove_button,
-        ):
-            apply_colors(button, background=accent, foreground=foreground)
+        colors = apply_collection_view_theme(
+            self.theme_manager,
+            widgets=(
+                self.panel,
+                self.title_label,
+                self.search_label,
+                self.search_text,
+                self.filter_label,
+                self.filter_choice,
+                self.sort_label,
+                self.sort_choice,
+                self.table,
+                self.status_label,
+                self.feedback_label,
+            ),
+            buttons=(
+                self.add_files_button,
+                self.add_folder_button,
+                self.refresh_button,
+                self.play_button,
+                self.favorite_button,
+                self.remove_button,
+            ),
+        )
         self._refresh_now_playing_highlight(colors)
 
     def refresh_library(self) -> None:
@@ -611,27 +599,16 @@ class LibraryView:
         3. Persistence failures must not block shutdown, so the shared helper contains toolkit-specific exceptions.
         """
         self._persist_column_widths()
-        for event_type, subscription in tuple(self._subscriptions):
-            unsubscribe = getattr(self.event_bus, 'unsubscribe', None)
-            if callable(unsubscribe):
-                try:
-                    unsubscribe(event_type, subscription=subscription)
-                except LIBRARY_VIEW_EXCEPTIONS:
-                    logger.debug('Unable to unsubscribe wx LibraryView.', exc_info=True)
-        self._subscriptions.clear()
-        unregister_callback(
-            self.localization_manager,
-            'unregister_language_change_callback',
-            self.update_localization,
+        release_view_lifecycle(
+            event_bus=self.event_bus,
+            subscriptions=self._subscriptions,
+            exceptions=LIBRARY_VIEW_EXCEPTIONS,
+            localization_manager=self.localization_manager,
+            localization_callback=self.update_localization,
+            theme_manager=self.theme_manager,
+            theme_callback=self.update_theme_colors,
             logger=logger,
-            message='Unable to unregister wx LibraryView language callback.',
-        )
-        unregister_callback(
-            self.theme_manager,
-            'unregister_theme_change_callback',
-            self.update_theme_colors,
-            logger=logger,
-            message='Unable to unregister wx LibraryView theme callback.',
+            view_name='LibraryView',
         )
 
     def show(self) -> None:

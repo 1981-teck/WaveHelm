@@ -10,7 +10,6 @@ from src.audio.audio_event_models import AudioEventType
 from src.model.media_file import MediaFile
 from src.ui_wx.common import (
     WX_CALLBACK_EXCEPTIONS,
-    apply_colors,
     create_flow_sizer,
     format_duration,
     get_selected_indices,
@@ -18,13 +17,15 @@ from src.ui_wx.common import (
     set_view_feedback,
     subscribe_event,
     get_localized_text,
-    get_theme_colors,
-    persist_listctrl_column_widths,
     register_callback,
-    restore_listctrl_column_widths,
     set_label_text,
-    set_listctrl_column_label,
-    unregister_callback,
+)
+from src.ui_wx.view_presentation_support import (
+    apply_collection_view_theme,
+    persist_column_width_groups,
+    release_view_lifecycle,
+    restore_column_width_groups,
+    set_translated_column_labels,
 )
 
 logger = logging.getLogger(__name__)
@@ -189,40 +190,27 @@ class FavoritesView:
         self._update_status_label()
 
     def _set_column_labels(self) -> None:
-        columns = getattr(self.table, 'columns', None)
-        for index, (name, key) in enumerate(self.COLUMN_KEYS):
-            label = self._t(key, name.title())
-            set_listctrl_column_label(self.table, index, label)
+        set_translated_column_labels(self.table, self.COLUMN_KEYS, self._t)
+
+    def _column_width_groups(self) -> tuple[tuple[object, str, int], ...]:
+        return ((self.table, self.COLUMN_WIDTHS_SETTING_KEY, len(self.COLUMN_KEYS)),)
 
     def _restore_column_widths(self) -> None:
-        restore_listctrl_column_widths(
-            self.table,
-            self.settings_manager,
-            self.COLUMN_WIDTHS_SETTING_KEY,
-            len(self.COLUMN_KEYS),
-        )
+        restore_column_width_groups(self.settings_manager, self._column_width_groups())
 
     def _persist_column_widths(self) -> None:
-        persist_listctrl_column_widths(
-            self.table,
-            self.settings_manager,
-            self.COLUMN_WIDTHS_SETTING_KEY,
-            len(self.COLUMN_KEYS),
-        )
+        persist_column_width_groups(self.settings_manager, self._column_width_groups())
 
     def _on_table_column_resized(self, _event: Any) -> None:
         self._persist_column_widths()
 
 
     def update_theme_colors(self, *_: Any) -> None:
-        colors = get_theme_colors(self.theme_manager)
-        background = colors.get('panel_bg') or colors.get('bg_color')
-        foreground = colors.get('text_color')
-        accent = colors.get('button_color') or background
-        for widget in (self.panel, self.title_label, self.table, self.status_label, self.feedback_label):
-            apply_colors(widget, background=background, foreground=foreground)
-        for button in (self.play_button, self.remove_button, self.refresh_button, self.select_all_button):
-            apply_colors(button, background=accent, foreground=foreground)
+        colors = apply_collection_view_theme(
+            self.theme_manager,
+            widgets=(self.panel, self.title_label, self.table, self.status_label, self.feedback_label),
+            buttons=(self.play_button, self.remove_button, self.refresh_button, self.select_all_button),
+        )
         self._refresh_now_playing_highlight(colors)
 
     def reload_favorites(self) -> None:
@@ -414,27 +402,16 @@ class FavoritesView:
         3. Persistence remains best-effort and must not raise during teardown.
         """
         self._persist_column_widths()
-        for event_type, subscription in tuple(self._subscriptions):
-            unsubscribe = getattr(self.event_bus, 'unsubscribe', None)
-            if callable(unsubscribe):
-                try:
-                    unsubscribe(event_type, subscription=subscription)
-                except FAVORITES_VIEW_EXCEPTIONS:
-                    logger.debug('Unable to unsubscribe wx FavoritesView.', exc_info=True)
-        self._subscriptions.clear()
-        unregister_callback(
-            self.localization_manager,
-            'unregister_language_change_callback',
-            self.update_localization,
+        release_view_lifecycle(
+            event_bus=self.event_bus,
+            subscriptions=self._subscriptions,
+            exceptions=FAVORITES_VIEW_EXCEPTIONS,
+            localization_manager=self.localization_manager,
+            localization_callback=self.update_localization,
+            theme_manager=self.theme_manager,
+            theme_callback=self.update_theme_colors,
             logger=logger,
-            message='Unable to unregister wx FavoritesView language callback.',
-        )
-        unregister_callback(
-            self.theme_manager,
-            'unregister_theme_change_callback',
-            self.update_theme_colors,
-            logger=logger,
-            message='Unable to unregister wx FavoritesView theme callback.',
+            view_name='FavoritesView',
         )
 
     def show(self) -> None:
