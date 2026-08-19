@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -16,6 +17,7 @@ DEV_REQUIREMENTS_PATH = ROOT / "requirements-dev.txt"
 CHANGELOG_PATH = ROOT / "CHANGELOG.md"
 ROADMAP_PATH = ROOT / "ROADMAP.md"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
+DEPENDABOT_PATH = ROOT / ".github" / "dependabot.yml"
 GITIGNORE_PATH = ROOT / ".gitignore"
 SECURITY_PATH = ROOT / "SECURITY.md"
 
@@ -40,6 +42,7 @@ def test_packaging_baseline_files_exist():
     assert CHANGELOG_PATH.exists()
     assert ROADMAP_PATH.exists()
     assert CI_WORKFLOW_PATH.exists()
+    assert DEPENDABOT_PATH.exists()
     assert SECURITY_PATH.exists()
 
 
@@ -122,6 +125,45 @@ def test_development_tooling_and_ci_are_pinned_and_release_aware():
     assert "runtime-freeze.txt" in workflow
     assert "cyclonedx-py requirements" not in workflow
 
+
+
+def test_ci_actions_are_immutable_current_generation():
+    workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    expected = {
+        "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7.0.1"),
+        "actions/setup-python": ("5fda3b95a4ea91299a34e894583c3862153e4b97", "v7.0.0"),
+        "actions/upload-artifact": ("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "v7.0.1"),
+    }
+    refs = re.findall(r"uses:\s+(actions/[a-z0-9-]+)@([0-9a-f]{40})\s+#\s+(v[0-9.]+)", workflow)
+    assert refs
+    for action, sha, version in refs:
+        assert action in expected
+        assert (sha, version) == expected[action]
+
+    assert workflow.count("persist-credentials: false") == workflow.count("actions/checkout@")
+    assert "actions/checkout@v" not in workflow
+    assert "actions/setup-python@v" not in workflow
+    assert "actions/upload-artifact@v" not in workflow
+
+
+def test_ci_limits_permissions_concurrency_time_and_artifact_retention():
+    workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "permissions:\n  contents: read" in workflow
+    assert "group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}" in workflow
+    assert "cancel-in-progress: true" in workflow
+    assert workflow.count("timeout-minutes:") == 3
+    assert "retention-days: 14" in workflow
+    assert "retention-days: 30" in workflow
+
+
+def test_dependabot_monitors_github_actions_weekly():
+    config = DEPENDABOT_PATH.read_text(encoding="utf-8")
+
+    assert "version: 2" in config
+    assert 'package-ecosystem: "github-actions"' in config
+    assert 'directory: "/"' in config
+    assert 'interval: "weekly"' in config
 
 def test_release_ignore_policy_preserves_legal_sources_and_excludes_test_outputs():
     ignore_lines = {

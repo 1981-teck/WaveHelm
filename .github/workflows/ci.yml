@@ -8,13 +8,20 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   source-hygiene:
     name: Source hygiene
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Reject generated or sensitive tracked files
         shell: bash
@@ -71,16 +78,19 @@ jobs:
   test-and-build:
     name: Windows / Python ${{ matrix.python-version }}
     runs-on: windows-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -102,21 +112,25 @@ jobs:
 
       - name: Upload build artifacts
         if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wavehelm-python-distributions
           path: dist/*
           if-no-files-found: error
+          retention-days: 14
 
   supply-chain:
     name: Dependency audit and SBOM
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -174,7 +188,7 @@ jobs:
 
       - name: Upload supply-chain evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wavehelm-supply-chain-evidence
           path: |
@@ -182,6 +196,7 @@ jobs:
             runtime-freeze.txt
             sbom.cdx.json
           if-no-files-found: warn
+          retention-days: 30
 
       - name: Enforce dependency audit result
         if: steps.dependency-audit.outcome != 'success'
