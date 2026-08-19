@@ -359,12 +359,6 @@ class AmbientManager:
         self.refresh_ambient_library()
         return self._sound_map.get(sound_name_or_path)
 
-    def _restart_if_playing(self) -> None:
-        if not self._enabled or not self._source_path:
-            return
-        current = self._current_name or self._source_path
-        self.play_ambient_sound(current)
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------

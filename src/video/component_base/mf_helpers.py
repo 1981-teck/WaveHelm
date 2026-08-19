@@ -177,10 +177,6 @@ def MFCreateAttributes(initial_size: int = 8) -> ComPtr:
     return ComPtr(p_attributes, IMFAttributes)
 
 
-def _hresult_hex(hr: int) -> str:
-    return _hr_to_hex(hr)
-
-
 def _co_create_media_engine_class_factory_raw() -> POINTER(IMFMediaEngineClassFactory):
     if _CoCreateInstance is None:
         raise RuntimeError("CoCreateInstance non disponibile da ole32.dll")
