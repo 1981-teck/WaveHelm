@@ -13,12 +13,30 @@ Edge cases and mitigations:
 from __future__ import annotations
 
 import ctypes
-import importlib
 import queue
-from typing import TYPE_CHECKING
+import sys
+from types import ModuleType
+from typing import Callable, ContextManager, Protocol
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .com_thread_manager import ComThreadManager
+
+class _ComTaskLike(Protocol):
+    """Structural task contract consumed by the extracted runtime helpers."""
+
+    name: str
+    fn: Callable[..., object]
+    args: tuple[object, ...]
+    kwargs: dict[str, object]
+    response_q: queue.Queue[object]
+
+
+class _ComThreadManagerLike(Protocol):
+    """Minimal manager state required by this module without importing its owner."""
+
+    thread_name: str
+    _lock: ContextManager[object]
+    _com_thread_id: int | None
+    _com_thread_wakeup: object | None
+    _task_queue: queue.Queue[_ComTaskLike]
 
 
 NONFATAL_COM_TASK_ERROR_MARKERS = (
@@ -40,12 +58,22 @@ def _is_nonfatal_com_task_error(exc: BaseException) -> bool:
     return any(marker in message for marker in NONFATAL_COM_TASK_ERROR_MARKERS)
 
 
-def _home_module():
-    """Return the historical module so runtime monkeypatches remain visible."""
-    return importlib.import_module("src.video.component_adapter.com_thread_manager")
+def _home_module() -> ModuleType:
+    """Return the already-loaded public owner module without importing it.
+
+    Runtime helpers are installed by ``com_thread_manager`` itself, so a helper
+    invocation without the owner module loaded indicates an invalid internal call.
+    Avoiding an import here removes the reverse runtime dependency that previously
+    made the extracted helper module capable of importing its owner.
+    """
+    module_name = "src.video.component_adapter.com_thread_manager"
+    module = sys.modules.get(module_name)
+    if module is None:
+        raise RuntimeError(f"{module_name} must be loaded before COM runtime helpers are used")
+    return module
 
 
-def _is_on_com_thread(self: "ComThreadManager") -> bool:
+def _is_on_com_thread(self: _ComThreadManagerLike) -> bool:
     """Return ``True`` when the current caller is the managed COM thread."""
     home = _home_module()
     with self._lock:
@@ -58,7 +86,7 @@ def _is_on_com_thread(self: "ComThreadManager") -> bool:
         return False
 
 
-def _wake_com_thread(self: "ComThreadManager") -> None:
+def _wake_com_thread(self: _ComThreadManagerLike) -> None:
     """Best-effort wake-up for the COM thread.
 
     The wake-up handle is snapshotted under lock to avoid races with shutdown.
@@ -83,7 +111,7 @@ def _wake_com_thread(self: "ComThreadManager") -> None:
         home.logger.debug("[%s] _SetEvent(wakeup) fallito (best effort).", self.thread_name, exc_info=True)
 
 
-def _reject_pending_tasks(self: "ComThreadManager", reason: str) -> None:
+def _reject_pending_tasks(self: _ComThreadManagerLike, reason: str) -> None:
     """Drain queued tasks and unblock synchronous waiters with a rejection error."""
     home = _home_module()
     rejected = 0
@@ -109,7 +137,7 @@ def _reject_pending_tasks(self: "ComThreadManager", reason: str) -> None:
         home.logger.debug("[%s] Rifiutati %d task COM pendenti (%s).", self.thread_name, rejected, reason)
 
 
-def _drain_tasks_com_thread(self: "ComThreadManager") -> None:
+def _drain_tasks_com_thread(self: _ComThreadManagerLike) -> None:
     """Execute every task currently queued for the COM worker."""
     home = _home_module()
     while True:
