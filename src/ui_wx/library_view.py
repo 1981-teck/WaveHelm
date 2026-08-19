@@ -2,19 +2,25 @@ from __future__ import annotations
 
 import importlib
 import logging
-from pathlib import Path
-import os
 from typing import Any
 
 from src.audio.audio_event_models import AudioEventType
 from src.model.media_file import MediaFile, MediaType
+from src.ui_wx.collection_view_support import (
+    canonical_media_path,
+    filter_library_media,
+    library_row_values,
+    select_file_paths,
+    select_folder_path,
+    selected_items,
+    sort_library_media,
+)
 from src.ui_wx.common import (
     WX_CALLBACK_EXCEPTIONS,
     apply_colors,
     autosize_choice_control,
     create_flow_sizer,
     format_duration,
-    get_selected_indices,
     refresh_now_playing_highlight,
     set_view_feedback,
     subscribe_event,
@@ -332,7 +338,12 @@ class LibraryView:
         self._refresh_now_playing_highlight(colors)
 
     def refresh_library(self) -> None:
-        self._displayed_media = self._sorted_media(self._filtered_media(self._all_media()))
+        filtered = filter_library_media(
+            self._all_media(),
+            query=self.search_text.GetValue() or '',
+            selected_filter=self._selected_filter(),
+        )
+        self._displayed_media = sort_library_media(filtered, sort_name=self._selected_sort())
         self._populate_rows()
         self._update_status_label()
 
@@ -347,43 +358,6 @@ class LibraryView:
             return []
         return [item for item in items if isinstance(item, MediaFile)]
 
-    def _filtered_media(self, media_items: list[MediaFile]) -> list[MediaFile]:
-        query = (self.search_text.GetValue() or '').strip().lower()
-        selected_filter = self._selected_filter()
-        filtered: list[MediaFile] = []
-        for media in media_items:
-            if selected_filter is not MediaType.ALL and getattr(media, 'media_type', MediaType.UNKNOWN) is not selected_filter:
-                continue
-            blob = self._search_blob(media)
-            if query and query not in blob:
-                continue
-            filtered.append(media)
-        return filtered
-
-    def _search_blob(self, media: MediaFile) -> str:
-        metadata = dict(getattr(media, 'metadata', {}) or {})
-        parts = [
-            getattr(media, 'title', '') or '',
-            metadata.get('artist', '') or '',
-            metadata.get('album', '') or '',
-            getattr(media, 'path', '') or '',
-        ]
-        return ' '.join(str(part).lower() for part in parts if part)
-
-    def _sorted_media(self, media_items: list[MediaFile]) -> list[MediaFile]:
-        sort_name = self._selected_sort()
-        return sorted(media_items, key=lambda media: self._sort_key(media, sort_name))
-
-    def _sort_key(self, media: MediaFile, sort_name: str) -> Any:
-        metadata = dict(getattr(media, 'metadata', {}) or {})
-        if sort_name == 'artist':
-            return (str(metadata.get('artist', '')).lower(), str(media.title).lower())
-        if sort_name == 'album':
-            return (str(metadata.get('album', '')).lower(), str(media.title).lower())
-        if sort_name == 'duration':
-            return (float(getattr(media, 'duration', 0.0) or 0.0), str(media.title).lower())
-        return str(getattr(media, 'title', '') or '').lower()
-
     def _populate_rows(self) -> None:
         self.table.DeleteAllItems()
         for row_index, media in enumerate(self._displayed_media):
@@ -395,15 +369,7 @@ class LibraryView:
 
     @staticmethod
     def _canonical_path(path: str) -> str:
-        value = str(path or '').strip()
-        if not value:
-            return ''
-        if value.startswith(('http://', 'https://', 'rtsp://', 'rtmp://')):
-            return value
-        try:
-            return os.path.normcase(os.path.abspath(os.path.normpath(value)))
-        except LIBRARY_VIEW_EXCEPTIONS:
-            return value
+        return canonical_media_path(path, exceptions=LIBRARY_VIEW_EXCEPTIONS)
 
 
     def _refresh_now_playing_highlight(self, colors: dict[str, str] | None = None) -> None:
@@ -421,17 +387,11 @@ class LibraryView:
         )
 
     def _row_values(self, media: MediaFile) -> list[str]:
-        metadata = dict(getattr(media, 'metadata', {}) or {})
-        media_type = getattr(media, 'media_type', MediaType.UNKNOWN)
-        return [
-            getattr(media, 'title', '') or '',
-            str(metadata.get('artist', '') or ''),
-            str(metadata.get('album', '') or ''),
-            format_duration(float(getattr(media, 'duration', 0.0) or 0.0), include_hours=True),
-            self._media_type_text(media_type),
-            getattr(media, 'path', '') or '',
-        ]
-
+        return library_row_values(
+            media,
+            media_type_text=self._media_type_text,
+            duration_text=lambda seconds: format_duration(seconds, include_hours=True),
+        )
 
     def _media_type_text(self, media_type: MediaType) -> str:
         if media_type is MediaType.AUDIO:
@@ -442,11 +402,7 @@ class LibraryView:
 
 
     def get_selected_media_files(self) -> list[MediaFile]:
-        selected: list[MediaFile] = []
-        for index in get_selected_indices(self.table):
-            if 0 <= index < len(self._displayed_media):
-                selected.append(self._displayed_media[index])
-        return selected
+        return selected_items(self.table, self._displayed_media)
 
     def _on_search_changed(self, _event: Any | None = None) -> None:
         self.refresh_library()
@@ -570,45 +526,29 @@ class LibraryView:
         self._import_paths([folder])
 
     def _select_file_paths(self) -> list[str]:
-        file_dialog_cls = getattr(self._wx, 'FileDialog', None)
-        if file_dialog_cls is None:
-            self._set_feedback(self._t('library_dialog_unavailable', 'Import dialog is not available on this runtime.'), 'orange')
-            return []
-        dialog = file_dialog_cls(self.panel, message=self._t('library_add_files_button', 'Add files'))
-        try:
-            if dialog.ShowModal() in _DIALOG_CANCELLED:
-                return []
-            getter = getattr(dialog, 'GetPaths', None)
-            if callable(getter):
-                return [str(path) for path in getter() if path]
-            single_getter = getattr(dialog, 'GetPath', None)
-            if callable(single_getter):
-                path = single_getter()
-                return [str(path)] if path else []
-            return []
-        finally:
-            destroy = getattr(dialog, 'Destroy', None)
-            if callable(destroy):
-                destroy()
+        return select_file_paths(
+            self._wx,
+            self.panel,
+            message=self._t('library_add_files_button', 'Add files'),
+            cancelled_results=_DIALOG_CANCELLED,
+            unavailable=lambda: self._set_feedback(
+                self._t('library_dialog_unavailable', 'Import dialog is not available on this runtime.'),
+                'orange',
+            ),
+        )
 
     def _select_folder_path(self) -> str:
-        dir_dialog_cls = getattr(self._wx, 'DirDialog', None)
-        if dir_dialog_cls is None:
-            self._set_feedback(self._t('library_dialog_unavailable', 'Import dialog is not available on this runtime.'), 'orange')
-            return ''
-        dialog = dir_dialog_cls(self.panel, message=self._t('library_add_folder_button', 'Add folder'))
-        try:
-            if dialog.ShowModal() in _DIALOG_CANCELLED:
-                return ''
-            getter = getattr(dialog, 'GetPath', None)
-            if not callable(getter):
-                return ''
-            value = getter()
-            return str(value) if value else ''
-        finally:
-            destroy = getattr(dialog, 'Destroy', None)
-            if callable(destroy):
-                destroy()
+        return select_folder_path(
+            self._wx,
+            self.panel,
+            message=self._t('library_add_folder_button', 'Add folder'),
+            cancelled_results=_DIALOG_CANCELLED,
+            unavailable=lambda: self._set_feedback(
+                self._t('library_dialog_unavailable', 'Import dialog is not available on this runtime.'),
+                'orange',
+            ),
+            allow_paths_fallback=False,
+        )
 
     def _import_paths(self, paths: list[str]) -> None:
         adder = getattr(self.library_controller, 'add_media_files', None)

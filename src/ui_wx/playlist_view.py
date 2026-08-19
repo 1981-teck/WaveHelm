@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import importlib
 import logging
-import os
-from pathlib import Path
 from typing import Any
 
 from src.audio.audio_event_models import AudioEventType
 from src.model.media_file import MediaFile
 from src.utils.helpers import is_audio_file, is_video_file
+from src.ui_wx.collection_view_support import (
+    canonical_media_path,
+    collect_media_file_paths,
+    playlist_id,
+    playlist_name,
+    playlist_track_row_values,
+    select_file_paths,
+    select_folder_path,
+    selected_items,
+    selected_media_paths,
+)
 from src.ui_wx.common import (
-    WX_CALLBACK_EXCEPTIONS,
     apply_colors,
     create_flow_sizer,
     format_duration,
@@ -339,14 +347,10 @@ class PlaylistView:
         return [item for item in items if isinstance(item, dict)]
 
     def _playlist_id(self, playlist: dict[str, Any]) -> int | None:
-        try:
-            return int(playlist.get('id'))
-        except PLAYLIST_VIEW_EXCEPTIONS:
-            return None
+        return playlist_id(playlist, exceptions=PLAYLIST_VIEW_EXCEPTIONS)
 
     def _playlist_name(self, playlist: dict[str, Any]) -> str:
-        value = playlist.get('name')
-        return str(value).strip() if value else ''
+        return playlist_name(playlist)
 
     def _populate_playlist_rows(self) -> None:
         self.playlist_table.DeleteAllItems()
@@ -400,15 +404,7 @@ class PlaylistView:
 
     @staticmethod
     def _canonical_path(path: str) -> str:
-        value = str(path or '').strip()
-        if not value:
-            return ''
-        if value.startswith(('http://', 'https://', 'rtsp://', 'rtmp://')):
-            return value
-        try:
-            return os.path.normcase(os.path.abspath(os.path.normpath(value)))
-        except PLAYLIST_VIEW_EXCEPTIONS:
-            return value
+        return canonical_media_path(path, exceptions=PLAYLIST_VIEW_EXCEPTIONS)
 
 
     def _refresh_now_playing_highlight(self, colors: dict[str, str] | None = None) -> None:
@@ -426,15 +422,7 @@ class PlaylistView:
         )
 
     def _track_row_values(self, media: MediaFile) -> list[str]:
-        metadata = dict(getattr(media, 'metadata', {}) or {})
-        artist = str(getattr(media, 'artist', None) or metadata.get('artist', '') or '')
-        return [
-            getattr(media, 'title', '') or Path(getattr(media, 'path', '')).stem,
-            artist,
-            format_duration(float(getattr(media, 'duration', 0.0) or 0.0)),
-            getattr(media, 'path', '') or '',
-        ]
-
+        return playlist_track_row_values(media, duration_text=format_duration)
 
     def _selected_playlist(self) -> dict[str, Any] | None:
         index = self.playlist_table.GetFirstSelected()
@@ -443,24 +431,10 @@ class PlaylistView:
         return self._playlists[index]
 
     def _selected_track_paths(self) -> list[str]:
-        selected: list[str] = []
-        index = self.track_table.GetFirstSelected()
-        while index != -1:
-            if 0 <= index < len(self._current_playlist_tracks):
-                path = getattr(self._current_playlist_tracks[index], 'path', '') or ''
-                if path:
-                    selected.append(path)
-            index = self.track_table.GetNextSelected(index)
-        return selected
+        return selected_media_paths(self.track_table, self._current_playlist_tracks)
 
     def _selected_tracks(self) -> list[MediaFile]:
-        selected: list[MediaFile] = []
-        index = self.track_table.GetFirstSelected()
-        while index != -1:
-            if 0 <= index < len(self._current_playlist_tracks):
-                selected.append(self._current_playlist_tracks[index])
-            index = self.track_table.GetNextSelected(index)
-        return selected
+        return selected_items(self.track_table, self._current_playlist_tracks)
 
     def _on_playlist_selected(self, _event: Any | None = None) -> None:
         playlist = self._selected_playlist()
@@ -665,62 +639,35 @@ class PlaylistView:
                 destroy()
 
     def _select_file_paths(self) -> list[str]:
-        file_dialog_cls = getattr(self._wx, 'FileDialog', None)
-        if file_dialog_cls is None:
-            self._set_feedback(self._t('playlist_add_not_available', 'Add to playlist not available.'), 'orange')
-            return []
-        dialog = file_dialog_cls(self.panel, message=self._t('playlist_add_files_title', 'Select tracks to add'))
-        try:
-            if dialog.ShowModal() in _DIALOG_CANCELLED:
-                return []
-            getter = getattr(dialog, 'GetPaths', None)
-            if callable(getter):
-                return [str(path) for path in getter() if path]
-            single_getter = getattr(dialog, 'GetPath', None)
-            if callable(single_getter):
-                value = single_getter()
-                return [str(value)] if value else []
-            return []
-        finally:
-            destroy = getattr(dialog, 'Destroy', None)
-            if callable(destroy):
-                destroy()
+        return select_file_paths(
+            self._wx,
+            self.panel,
+            message=self._t('playlist_add_files_title', 'Select tracks to add'),
+            cancelled_results=_DIALOG_CANCELLED,
+            unavailable=lambda: self._set_feedback(
+                self._t('playlist_add_not_available', 'Add to playlist not available.'),
+                'orange',
+            ),
+        )
 
     def _select_folder_path(self) -> str:
-        dir_dialog_cls = getattr(self._wx, 'DirDialog', None)
-        if dir_dialog_cls is None:
-            self._set_feedback(self._t('playlist_add_not_available', 'Add to playlist not available.'), 'orange')
-            return ''
-        dialog = dir_dialog_cls(self.panel, message=self._t('playlist_add_folder_title', 'Select a folder with media files'))
-        try:
-            if dialog.ShowModal() in _DIALOG_CANCELLED:
-                return ''
-            getter = getattr(dialog, 'GetPath', None)
-            if callable(getter):
-                value = getter()
-                return str(value or '').strip()
-            getters = getattr(dialog, 'GetPaths', None)
-            if callable(getters):
-                values = [str(path).strip() for path in getters() if str(path).strip()]
-                return values[0] if values else ''
-            return ''
-        finally:
-            destroy = getattr(dialog, 'Destroy', None)
-            if callable(destroy):
-                destroy()
+        return select_folder_path(
+            self._wx,
+            self.panel,
+            message=self._t('playlist_add_folder_title', 'Select a folder with media files'),
+            cancelled_results=_DIALOG_CANCELLED,
+            unavailable=lambda: self._set_feedback(
+                self._t('playlist_add_not_available', 'Add to playlist not available.'),
+                'orange',
+            ),
+            allow_paths_fallback=True,
+        )
 
     def _collect_media_file_paths(self, folder_path: str) -> list[str]:
-        folder = Path(str(folder_path or '').strip())
-        if not folder.is_dir():
-            return []
-        media_paths: list[str] = []
-        for candidate in sorted(folder.rglob('*'), key=lambda item: str(item).lower()):
-            if not candidate.is_file():
-                continue
-            resolved = str(candidate)
-            if is_audio_file(resolved) or is_video_file(resolved):
-                media_paths.append(resolved)
-        return media_paths
+        return collect_media_file_paths(
+            folder_path,
+            is_media_file=lambda path: is_audio_file(path) or is_video_file(path),
+        )
 
     def _confirm(self, title: str, message: str) -> bool:
         style = getattr(self._wx, 'YES_NO', 0) | getattr(self._wx, 'ICON_QUESTION', 0)
