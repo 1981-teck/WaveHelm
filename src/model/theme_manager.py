@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.audio.audio_events import AudioEventType
 from src.model.theme_manager_builtins import BUILTIN_COLOR_THEME_NAMES, get_builtin_themes
+from src.utils.durable_io import write_bytes_atomic_durable
 from src.utils.helpers import get_app_data_path
 
 logger = logging.getLogger(__name__)
@@ -115,9 +116,15 @@ class ThemeManager:
             if name not in builtin_names
         }
         try:
-            self.custom_themes_file.parent.mkdir(parents=True, exist_ok=True)
-            with self.custom_themes_file.open('w', encoding='utf-8') as file_obj:
-                json.dump(custom_themes_to_save, file_obj, indent=4)
+            payload = json.dumps(custom_themes_to_save, indent=4).encode('utf-8')
+            directory_synced = write_bytes_atomic_durable(
+                self.custom_themes_file, payload
+            )
+            if not directory_synced:
+                logger.warning(
+                    'Temi personalizzati salvati ma sync directory fallita: %s',
+                    self.custom_themes_file,
+                )
             logger.info('Temi personalizzati salvati in %s', self.custom_themes_file)
         except FILE_EXCEPTIONS as exc:
             logger.error(

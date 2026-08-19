@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from src.utils.durable_io import write_bytes_atomic_durable
 from src.utils.helpers import get_app_data_path
 
 logger = logging.getLogger(__name__)
@@ -71,8 +72,13 @@ class ProfileManager:
                 "custom_effects_settings": self.user_profile.custom_effects_settings,
                 "home_stats_prefs": self.user_profile.home_stats_prefs,
             }
-            with open(PROFILE_PATH, "w", encoding="utf-8") as file_obj:
-                json.dump(data, file_obj, ensure_ascii=False, indent=2)
+            payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+            directory_synced = write_bytes_atomic_durable(PROFILE_PATH, payload)
+            if not directory_synced:
+                logger.warning(
+                    "[ProfileManager] profilo salvato ma sync directory fallita: %s",
+                    PROFILE_PATH,
+                )
         except FILE_IO_EXCEPTIONS as error:
             logger.error("[ProfileManager] salvataggio profilo fallito: %s", error, exc_info=True)
 

@@ -14,6 +14,7 @@ from src.audio.audio_events import AudioEventBus, AudioEventType
 from src.model.database_manager import DatabaseManager
 from src.model.media_file import MediaFile, MediaType
 from src.utils import ffprobe_service
+from src.utils.durable_io import write_bytes_atomic_durable
 from src.utils.helpers import get_app_data_path, is_audio_file, is_video_file
 from src.utils.media_metadata import (
     AudioMetadataDependencyUnavailableError,
@@ -45,7 +46,6 @@ def _canon_path_win(path_value: str) -> str:
 
 def _read_library_video_duration(path: str) -> float:
     """Return a finite video duration without blocking library indexing.
-
     Edge cases: unavailable/corrupt OpenCV; invalid rates/counts; typed ffprobe failures.
     """
     duration = 0.0
@@ -135,7 +135,6 @@ def _read_library_audio_metadata(path: str, fallback_title: str) -> tuple[str, f
     if tag_data.duration > 0.0:
         duration = float(tag_data.duration)
     return title, duration, metadata
-
 class LibraryController:
     """Controller della Libreria."""
 
@@ -161,8 +160,9 @@ class LibraryController:
         try:
             paths = [media.path for media in self._media if media.path]
             logger.info("[Library] Saving %s paths to %s", len(paths), self._library_path)
-            with open(self._library_path, "w", encoding="utf-8") as file_obj:
-                json.dump(paths, file_obj, ensure_ascii=False, indent=2)
+            payload = json.dumps(paths, ensure_ascii=False, indent=2).encode("utf-8")
+            if not write_bytes_atomic_durable(self._library_path, payload):
+                logger.warning("[Library] saved but parent directory sync failed: %s", self._library_path)
             logger.info("[Library] successfully saved library to %s", self._library_path)
         except FILE_IO_EXCEPTIONS as error:
             logger.warning("[Library] save failed: %s", error)
