@@ -13,6 +13,10 @@ from src.ui_wx.common import (
     WX_CALLBACK_EXCEPTIONS,
     apply_colors,
     create_flow_sizer,
+    format_duration,
+    refresh_now_playing_highlight,
+    set_view_feedback,
+    subscribe_event,
     get_localized_text,
     get_theme_colors,
     persist_listctrl_column_widths,
@@ -37,6 +41,9 @@ class PlaylistView:
     2. Dialog APIs or controller capabilities may be absent on a partial runtime, so actions degrade to bounded feedback instead of a broken flow.
     3. Player state events can reference paths that are no longer rendered, so highlight refresh is best-effort and never crashes the page.
     """
+
+    FEEDBACK_EVENT_TYPE = AudioEventType.FEEDBACK_MESSAGE
+    _set_feedback = set_view_feedback
 
     PLAYLIST_COLUMN_WIDTHS_SETTING_KEY = 'ui_playlist_playlist_column_widths'
     TRACK_COLUMN_WIDTHS_SETTING_KEY = 'ui_playlist_track_column_widths'
@@ -208,15 +215,15 @@ class PlaylistView:
         self._subscribe(AudioEventType.PLAYER_STATE_CHANGED, self._on_player_state_changed)
 
     def _subscribe(self, event_type: AudioEventType, callback: Any) -> None:
-        subscribe = getattr(self.event_bus, 'subscribe', None)
-        if not callable(subscribe):
-            return
-        try:
-            subscription = subscribe(event_type, callback)
-        except PLAYLIST_VIEW_EXCEPTIONS:
-            logger.debug('PlaylistView subscription failed for %s.', event_type, exc_info=True)
-            return
-        self._subscriptions.append((event_type, subscription))
+        subscribe_event(
+            self.event_bus,
+            self._subscriptions,
+            event_type,
+            callback,
+            exceptions=PLAYLIST_VIEW_EXCEPTIONS,
+            logger=logger,
+            view_name='PlaylistView',
+        )
 
     def _t(self, key: str, default: str | None = None, **kwargs: Any) -> str:
         fallback = default if default is not None else key
@@ -403,59 +410,20 @@ class PlaylistView:
         except PLAYLIST_VIEW_EXCEPTIONS:
             return value
 
-    @staticmethod
-    def _lighten_color(color: str | None, *, blend: float = 0.28) -> str | None:
-        value = str(color or '').strip()
-        if len(value) != 7 or not value.startswith('#'):
-            return None
-        try:
-            red = int(value[1:3], 16)
-            green = int(value[3:5], 16)
-            blue = int(value[5:7], 16)
-        except ValueError:
-            return None
-        ratio = min(0.9, max(0.0, float(blend)))
-        red = min(255, int(round(red + (255 - red) * ratio)))
-        green = min(255, int(round(green + (255 - green) * ratio)))
-        blue = min(255, int(round(blue + (255 - blue) * ratio)))
-        return f'#{red:02x}{green:02x}{blue:02x}'
-
-    def _now_playing_row_color(self, colors: dict[str, str] | None = None) -> str | None:
-        palette = dict(colors or get_theme_colors(self.theme_manager))
-        accent = palette.get('selection_bg') or palette.get('button_color')
-        return self._lighten_color(accent) or accent
 
     def _refresh_now_playing_highlight(self, colors: dict[str, str] | None = None) -> None:
-        item_count_getter = getattr(self.track_table, 'GetItemCount', None)
-        set_background = getattr(self.track_table, 'SetItemBackgroundColour', None)
-        if not callable(item_count_getter) or not callable(set_background):
-            return
-        palette = dict(colors or get_theme_colors(self.theme_manager))
-        default_background = palette.get('panel_bg') or palette.get('bg_color')
-        highlight_background = self._now_playing_row_color(palette)
-        current_key = self._canonical_path(self._current_track_path)
-        try:
-            item_count = max(0, int(item_count_getter() or 0))
-        except PLAYLIST_VIEW_EXCEPTIONS:
-            return
-        for row_index in range(item_count):
-            row_background = default_background
-            if current_key and row_index < len(self._current_playlist_tracks):
-                media_path = getattr(self._current_playlist_tracks[row_index], 'path', '') or ''
-                if self._canonical_path(media_path) == current_key:
-                    row_background = highlight_background or default_background
-            if row_background:
-                try:
-                    set_background(row_index, row_background)
-                except PLAYLIST_VIEW_EXCEPTIONS:
-                    logger.debug('Unable to refresh PlaylistView row highlight.', exc_info=True)
-                    return
-        refresh = getattr(self.track_table, 'Refresh', None)
-        if callable(refresh):
-            try:
-                refresh()
-            except PLAYLIST_VIEW_EXCEPTIONS:
-                logger.debug('Unable to refresh PlaylistView track table after row highlight update.', exc_info=True)
+        refresh_now_playing_highlight(
+            self.track_table,
+            self._current_playlist_tracks,
+            self._current_track_path,
+            self._canonical_path,
+            self.theme_manager,
+            colors=colors,
+            exceptions=PLAYLIST_VIEW_EXCEPTIONS,
+            logger=logger,
+            view_name='PlaylistView',
+            table_name='track table',
+        )
 
     def _track_row_values(self, media: MediaFile) -> list[str]:
         metadata = dict(getattr(media, 'metadata', {}) or {})
@@ -463,14 +431,10 @@ class PlaylistView:
         return [
             getattr(media, 'title', '') or Path(getattr(media, 'path', '')).stem,
             artist,
-            self._format_duration(float(getattr(media, 'duration', 0.0) or 0.0)),
+            format_duration(float(getattr(media, 'duration', 0.0) or 0.0)),
             getattr(media, 'path', '') or '',
         ]
 
-    def _format_duration(self, seconds: float) -> str:
-        total_seconds = max(0, int(seconds or 0))
-        minutes, remaining = divmod(total_seconds, 60)
-        return f'{minutes:02d}:{remaining:02d}'
 
     def _selected_playlist(self) -> dict[str, Any] | None:
         index = self.playlist_table.GetFirstSelected()
@@ -775,11 +739,6 @@ class PlaylistView:
             self._t('playlist_status', 'Playlists: {playlists} | Visible tracks: {tracks}', playlists=playlist_count, tracks=track_count),
         )
 
-    def _set_feedback(self, message: str, color: str) -> None:
-        set_label_text(self.feedback_label, message)
-        publish = getattr(self.event_bus, 'publish', None)
-        if callable(publish):
-            publish(AudioEventType.FEEDBACK_MESSAGE, {'message': message, 'color': color})
 
     def _on_playlist_updated(self, payload: Any) -> None:
         playlist_id = None

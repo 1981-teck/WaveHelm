@@ -12,6 +12,11 @@ from src.ui_wx.common import (
     WX_CALLBACK_EXCEPTIONS,
     apply_colors,
     create_flow_sizer,
+    format_duration,
+    get_selected_indices,
+    refresh_now_playing_highlight,
+    set_view_feedback,
+    subscribe_event,
     get_localized_text,
     get_theme_colors,
     persist_listctrl_column_widths,
@@ -35,6 +40,9 @@ class FavoritesView:
     2. Selected paths can be duplicated or case-variant across storage and UI rows, so removals are canonicalized before touching the database.
     3. Player-state events can reference media no longer visible in the table, so highlight refresh is always best-effort and bounded.
     """
+
+    FEEDBACK_EVENT_TYPE = AudioEventType.FEEDBACK_MESSAGE
+    _set_feedback = set_view_feedback
 
     COLUMN_WIDTHS_SETTING_KEY = 'ui_favorites_column_widths'
 
@@ -156,15 +164,15 @@ class FavoritesView:
         self._subscribe(AudioEventType.PLAYER_STATE_CHANGED, self._on_player_state_changed)
 
     def _subscribe(self, event_type: AudioEventType, callback: Any) -> None:
-        subscribe = getattr(self.event_bus, 'subscribe', None)
-        if not callable(subscribe):
-            return
-        try:
-            subscription = subscribe(event_type, callback)
-        except FAVORITES_VIEW_EXCEPTIONS:
-            logger.debug('FavoritesView subscription failed for %s.', event_type, exc_info=True)
-            return
-        self._subscriptions.append((event_type, subscription))
+        subscribe_event(
+            self.event_bus,
+            self._subscriptions,
+            event_type,
+            callback,
+            exceptions=FAVORITES_VIEW_EXCEPTIONS,
+            logger=logger,
+            view_name='FavoritesView',
+        )
 
     def _t(self, key: str, default: str | None = None, **kwargs: Any) -> str:
         fallback = default if default is not None else key
@@ -261,84 +269,34 @@ class FavoritesView:
             for column_index, value in enumerate(values[1:], start=1):
                 self.table.SetItem(inserted, column_index, value)
 
-    @staticmethod
-    def _lighten_color(color: str | None, *, blend: float = 0.28) -> str | None:
-        value = str(color or '').strip()
-        if len(value) != 7 or not value.startswith('#'):
-            return None
-        try:
-            red = int(value[1:3], 16)
-            green = int(value[3:5], 16)
-            blue = int(value[5:7], 16)
-        except ValueError:
-            return None
-        ratio = min(0.9, max(0.0, float(blend)))
-        red = min(255, int(round(red + (255 - red) * ratio)))
-        green = min(255, int(round(green + (255 - green) * ratio)))
-        blue = min(255, int(round(blue + (255 - blue) * ratio)))
-        return f'#{red:02x}{green:02x}{blue:02x}'
-
-    def _now_playing_row_color(self, colors: dict[str, str] | None = None) -> str | None:
-        palette = dict(colors or get_theme_colors(self.theme_manager))
-        accent = palette.get('selection_bg') or palette.get('button_color')
-        return self._lighten_color(accent) or accent
 
     def _refresh_now_playing_highlight(self, colors: dict[str, str] | None = None) -> None:
-        item_count_getter = getattr(self.table, 'GetItemCount', None)
-        set_background = getattr(self.table, 'SetItemBackgroundColour', None)
-        if not callable(item_count_getter) or not callable(set_background):
-            return
-        palette = dict(colors or get_theme_colors(self.theme_manager))
-        default_background = palette.get('panel_bg') or palette.get('bg_color')
-        highlight_background = self._now_playing_row_color(palette)
-        current_key = self._canon_path(self._current_track_path)
-        try:
-            item_count = max(0, int(item_count_getter() or 0))
-        except FAVORITES_VIEW_EXCEPTIONS:
-            return
-        for row_index in range(item_count):
-            row_background = default_background
-            if current_key and row_index < len(self._favorites):
-                media_path = getattr(self._favorites[row_index], 'path', '') or ''
-                if self._canon_path(media_path) == current_key:
-                    row_background = highlight_background or default_background
-            if row_background:
-                try:
-                    set_background(row_index, row_background)
-                except FAVORITES_VIEW_EXCEPTIONS:
-                    logger.debug('Unable to refresh FavoritesView row highlight.', exc_info=True)
-                    return
-        refresh = getattr(self.table, 'Refresh', None)
-        if callable(refresh):
-            try:
-                refresh()
-            except FAVORITES_VIEW_EXCEPTIONS:
-                logger.debug('Unable to refresh FavoritesView table after row highlight update.', exc_info=True)
+        refresh_now_playing_highlight(
+            self.table,
+            self._favorites,
+            self._current_track_path,
+            self._canon_path,
+            self.theme_manager,
+            colors=colors,
+            exceptions=FAVORITES_VIEW_EXCEPTIONS,
+            logger=logger,
+            view_name='FavoritesView',
+            table_name='table',
+        )
 
     def _row_values(self, media: MediaFile) -> list[str]:
         metadata = dict(getattr(media, 'metadata', {}) or {})
         artist = str(getattr(media, 'artist', None) or metadata.get('artist', '') or '')
-        duration = self._format_duration(float(getattr(media, 'duration', 0.0) or 0.0))
+        duration = format_duration(float(getattr(media, 'duration', 0.0) or 0.0))
         path = getattr(media, 'path', '') or ''
         title = getattr(media, 'title', '') or Path(path).stem or self._t('unknown_title', 'Unknown Title')
         return [title, artist, duration, path]
 
-    def _format_duration(self, seconds: float) -> str:
-        total_seconds = max(0, int(seconds or 0))
-        minutes, remaining = divmod(total_seconds, 60)
-        return f'{minutes:02d}:{remaining:02d}'
 
-    def _selected_indices(self) -> list[int]:
-        selected: list[int] = []
-        index = self.table.GetFirstSelected()
-        while index != -1:
-            selected.append(index)
-            index = self.table.GetNextSelected(index)
-        return selected
 
     def _selected_media(self) -> list[MediaFile]:
         selected: list[MediaFile] = []
-        for index in self._selected_indices():
+        for index in get_selected_indices(self.table):
             if 0 <= index < len(self._favorites):
                 selected.append(self._favorites[index])
         return selected
@@ -446,11 +404,6 @@ class FavoritesView:
             self._t('favorites_status', 'Favorites: {count}', count=len(self._favorites)),
         )
 
-    def _set_feedback(self, message: str, color: str) -> None:
-        set_label_text(self.feedback_label, message)
-        publish = getattr(self.event_bus, 'publish', None)
-        if callable(publish):
-            publish(AudioEventType.FEEDBACK_MESSAGE, {'message': message, 'color': color})
 
     def shutdown(self) -> None:
         """Persist live favorites widths and release FavoritesView subscriptions.

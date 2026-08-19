@@ -13,6 +13,11 @@ from src.ui_wx.common import (
     apply_colors,
     autosize_choice_control,
     create_flow_sizer,
+    format_duration,
+    get_selected_indices,
+    refresh_now_playing_highlight,
+    set_view_feedback,
+    subscribe_event,
     get_localized_text,
     get_theme_colors,
     persist_listctrl_column_widths,
@@ -37,6 +42,9 @@ class LibraryView:
     2. Selection can become stale after filtering, sorting, or external library updates, so playback/removal resolves paths from the current rendered snapshot.
     3. Partial controller capabilities degrade to bounded no-op feedback rather than leaving the page in an inconsistent state.
     """
+
+    FEEDBACK_EVENT_TYPE = AudioEventType.FEEDBACK_MESSAGE
+    _set_feedback = set_view_feedback
 
     COLUMN_WIDTHS_SETTING_KEY = 'ui_library_column_widths'
 
@@ -199,15 +207,15 @@ class LibraryView:
         self._subscribe(AudioEventType.PLAYER_STATE_CHANGED, self._on_player_state_changed)
 
     def _subscribe(self, event_type: AudioEventType, callback: Any) -> None:
-        subscribe = getattr(self.event_bus, 'subscribe', None)
-        if not callable(subscribe):
-            return
-        try:
-            subscription = subscribe(event_type, callback)
-        except LIBRARY_VIEW_EXCEPTIONS:
-            logger.debug('LibraryView subscription failed for %s.', event_type, exc_info=True)
-            return
-        self._subscriptions.append((event_type, subscription))
+        subscribe_event(
+            self.event_bus,
+            self._subscriptions,
+            event_type,
+            callback,
+            exceptions=LIBRARY_VIEW_EXCEPTIONS,
+            logger=logger,
+            view_name='LibraryView',
+        )
 
     def _t(self, key: str, default: str | None = None, **kwargs: Any) -> str:
         fallback = default if default is not None else key
@@ -397,59 +405,20 @@ class LibraryView:
         except LIBRARY_VIEW_EXCEPTIONS:
             return value
 
-    @staticmethod
-    def _lighten_color(color: str | None, *, blend: float = 0.28) -> str | None:
-        value = str(color or '').strip()
-        if len(value) != 7 or not value.startswith('#'):
-            return None
-        try:
-            red = int(value[1:3], 16)
-            green = int(value[3:5], 16)
-            blue = int(value[5:7], 16)
-        except ValueError:
-            return None
-        ratio = min(0.9, max(0.0, float(blend)))
-        red = min(255, int(round(red + (255 - red) * ratio)))
-        green = min(255, int(round(green + (255 - green) * ratio)))
-        blue = min(255, int(round(blue + (255 - blue) * ratio)))
-        return f'#{red:02x}{green:02x}{blue:02x}'
-
-    def _now_playing_row_color(self, colors: dict[str, str] | None = None) -> str | None:
-        palette = dict(colors or get_theme_colors(self.theme_manager))
-        accent = palette.get('selection_bg') or palette.get('button_color')
-        return self._lighten_color(accent) or accent
 
     def _refresh_now_playing_highlight(self, colors: dict[str, str] | None = None) -> None:
-        item_count_getter = getattr(self.table, 'GetItemCount', None)
-        set_background = getattr(self.table, 'SetItemBackgroundColour', None)
-        if not callable(item_count_getter) or not callable(set_background):
-            return
-        palette = dict(colors or get_theme_colors(self.theme_manager))
-        default_background = palette.get('panel_bg') or palette.get('bg_color')
-        highlight_background = self._now_playing_row_color(palette)
-        current_key = self._canonical_path(self._current_track_path)
-        try:
-            item_count = max(0, int(item_count_getter() or 0))
-        except LIBRARY_VIEW_EXCEPTIONS:
-            return
-        for row_index in range(item_count):
-            row_background = default_background
-            if current_key and row_index < len(self._displayed_media):
-                media_path = getattr(self._displayed_media[row_index], 'path', '') or ''
-                if self._canonical_path(media_path) == current_key:
-                    row_background = highlight_background or default_background
-            if row_background:
-                try:
-                    set_background(row_index, row_background)
-                except LIBRARY_VIEW_EXCEPTIONS:
-                    logger.debug('Unable to refresh LibraryView row highlight.', exc_info=True)
-                    return
-        refresh = getattr(self.table, 'Refresh', None)
-        if callable(refresh):
-            try:
-                refresh()
-            except LIBRARY_VIEW_EXCEPTIONS:
-                logger.debug('Unable to refresh LibraryView table after row highlight update.', exc_info=True)
+        refresh_now_playing_highlight(
+            self.table,
+            self._displayed_media,
+            self._current_track_path,
+            self._canonical_path,
+            self.theme_manager,
+            colors=colors,
+            exceptions=LIBRARY_VIEW_EXCEPTIONS,
+            logger=logger,
+            view_name='LibraryView',
+            table_name='table',
+        )
 
     def _row_values(self, media: MediaFile) -> list[str]:
         metadata = dict(getattr(media, 'metadata', {}) or {})
@@ -458,18 +427,11 @@ class LibraryView:
             getattr(media, 'title', '') or '',
             str(metadata.get('artist', '') or ''),
             str(metadata.get('album', '') or ''),
-            self._format_duration(float(getattr(media, 'duration', 0.0) or 0.0)),
+            format_duration(float(getattr(media, 'duration', 0.0) or 0.0), include_hours=True),
             self._media_type_text(media_type),
             getattr(media, 'path', '') or '',
         ]
 
-    def _format_duration(self, seconds: float) -> str:
-        total_seconds = max(0, int(seconds or 0))
-        minutes, remaining = divmod(total_seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours > 0:
-            return f'{hours:02d}:{minutes:02d}:{remaining:02d}'
-        return f'{minutes:02d}:{remaining:02d}'
 
     def _media_type_text(self, media_type: MediaType) -> str:
         if media_type is MediaType.AUDIO:
@@ -478,17 +440,10 @@ class LibraryView:
             return self._t('library_type_video', 'Video')
         return self._t('library_type_unknown', 'Unknown')
 
-    def _selected_indices(self) -> list[int]:
-        selected: list[int] = []
-        index = self.table.GetFirstSelected()
-        while index != -1:
-            selected.append(index)
-            index = self.table.GetNextSelected(index)
-        return selected
 
     def get_selected_media_files(self) -> list[MediaFile]:
         selected: list[MediaFile] = []
-        for index in self._selected_indices():
+        for index in get_selected_indices(self.table):
             if 0 <= index < len(self._displayed_media):
                 selected.append(self._displayed_media[index])
         return selected
@@ -674,11 +629,6 @@ class LibraryView:
         total = len(self._all_media())
         set_label_text(self.status_label, self._t('library_status', 'Visible items: {count} / {total}', count=count, total=total))
 
-    def _set_feedback(self, message: str, color: str) -> None:
-        set_label_text(self.feedback_label, message)
-        publish = getattr(self.event_bus, 'publish', None)
-        if callable(publish):
-            publish(AudioEventType.FEEDBACK_MESSAGE, {'message': message, 'color': color})
 
     def _on_library_updated(self, _payload: Any) -> None:
         self.refresh_library()
@@ -693,7 +643,7 @@ class LibraryView:
             if getattr(media, 'path', '') != path:
                 continue
             media.duration = duration
-            self.table.SetItem(index, 3, self._format_duration(duration))
+            self.table.SetItem(index, 3, format_duration(duration, include_hours=True))
             return
         self.refresh_library()
 

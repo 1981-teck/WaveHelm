@@ -5,9 +5,23 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Protocol, Sequence, TypeVar
 
 WX_CALLBACK_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError)
+
+_EventType = TypeVar('_EventType')
+
+
+class _SelectionListCtrl(Protocol):
+    def GetFirstSelected(self) -> int: ...
+    def GetNextSelected(self, current: int) -> int: ...
+
+
+class _FeedbackView(Protocol):
+    feedback_label: object
+    event_bus: object
+    FEEDBACK_EVENT_TYPE: object
+
 
 
 def get_localized_text(localization_manager: Any, key: str, default: str, **kwargs: Any) -> str:
@@ -234,6 +248,101 @@ def set_label_text(widget: Any, text: str) -> None:
     if callable(value_setter):
         value_setter(text)
         _relayout_ancestors(widget)
+
+
+def lighten_hex_color(color: str | None, *, blend: float = 0.28) -> str | None:
+    value = str(color or '').strip()
+    if len(value) != 7 or not value.startswith('#'):
+        return None
+    try:
+        red, green, blue = (int(value[start:start + 2], 16) for start in (1, 3, 5))
+    except ValueError:
+        return None
+    ratio = min(0.9, max(0.0, float(blend)))
+    channels = (red, green, blue)
+    red, green, blue = (min(255, int(round(channel + (255 - channel) * ratio))) for channel in channels)
+    return f'#{red:02x}{green:02x}{blue:02x}'
+
+
+def format_duration(seconds: float, *, include_hours: bool = False) -> str:
+    total_seconds = max(0, int(seconds or 0))
+    minutes, remaining = divmod(total_seconds, 60)
+    if include_hours:
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f'{hours:02d}:{minutes:02d}:{remaining:02d}'
+    return f'{minutes:02d}:{remaining:02d}'
+
+
+def get_selected_indices(list_ctrl: _SelectionListCtrl) -> list[int]:
+    selected: list[int] = []
+    index = list_ctrl.GetFirstSelected()
+    while index != -1:
+        selected.append(index)
+        index = list_ctrl.GetNextSelected(index)
+    return selected
+
+
+def set_view_feedback(view: _FeedbackView, message: str, color: str) -> None:
+    set_label_text(view.feedback_label, message)
+    publish = getattr(view.event_bus, 'publish', None)
+    if callable(publish):
+        publish(view.FEEDBACK_EVENT_TYPE, {'message': message, 'color': color})
+
+
+def subscribe_event(
+    event_bus: object, subscriptions: list[tuple[_EventType, object]], event_type: _EventType,
+    callback: Callable[..., object], *,
+    exceptions: tuple[type[BaseException], ...], logger: logging.Logger, view_name: str,
+) -> None:
+    subscribe = getattr(event_bus, 'subscribe', None)
+    if not callable(subscribe):
+        return
+    try:
+        subscription = subscribe(event_type, callback)
+    except exceptions:
+        logger.debug('%s subscription failed for %s.', view_name, event_type, exc_info=True)
+        return
+    subscriptions.append((event_type, subscription))
+
+
+def refresh_now_playing_highlight(
+    list_ctrl: object, media_items: Sequence[object], current_track_path: str,
+    canonicalize: Callable[[str], str], theme_manager: object, *,
+    colors: dict[str, str] | None, exceptions: tuple[type[BaseException], ...],
+    logger: logging.Logger, view_name: str, table_name: str = 'table',
+) -> None:
+    item_count_getter = getattr(list_ctrl, 'GetItemCount', None)
+    set_background = getattr(list_ctrl, 'SetItemBackgroundColour', None)
+    if not callable(item_count_getter) or not callable(set_background):
+        return
+    palette = dict(colors or get_theme_colors(theme_manager))
+    default_background = palette.get('panel_bg') or palette.get('bg_color')
+    accent = palette.get('selection_bg') or palette.get('button_color')
+    highlight_background = lighten_hex_color(accent) or accent
+    current_key = canonicalize(current_track_path)
+    try:
+        item_count = max(0, int(item_count_getter() or 0))
+    except exceptions:
+        return
+    for row_index in range(item_count):
+        row_background = default_background
+        if current_key and row_index < len(media_items):
+            media_path = getattr(media_items[row_index], 'path', '') or ''
+            if canonicalize(media_path) == current_key:
+                row_background = highlight_background or default_background
+        if row_background:
+            try:
+                set_background(row_index, row_background)
+            except exceptions:
+                logger.debug('Unable to refresh %s row highlight.', view_name, exc_info=True)
+                return
+    refresh = getattr(list_ctrl, 'Refresh', None)
+    if callable(refresh):
+        try:
+            refresh()
+        except exceptions:
+            logger.debug('Unable to refresh %s %s after row highlight update.', view_name, table_name, exc_info=True)
 
 
 
