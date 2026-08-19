@@ -5,7 +5,7 @@ This repository is maintained as a **Windows source-first public project**.
 ## Supported environment
 
 - Windows 10 or Windows 11
-- Python 3.10 or newer
+- Python 3.11 or newer
 - Recommended Python runtime: 3.12
 - PowerShell or Command Prompt
 
@@ -55,7 +55,13 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### 5. Start WaveHelm
+### 5. Install development and test tooling (for contributors)
+
+```powershell
+python -m pip install -r requirements-dev.txt
+```
+
+### 6. Start WaveHelm
 
 ```powershell
 python main.py
@@ -65,8 +71,16 @@ The optional `--ui-backend wx` flag is still accepted for compatibility, but wx 
 
 ## Running tests
 
+The source release includes the complete test suite. Generated test runtime directories are intentionally excluded from version control and release archives.
+
 ```powershell
 python -m pytest -q tests
+```
+
+## Building source and wheel artifacts
+
+```powershell
+python -m build
 ```
 
 ## Troubleshooting

@@ -1,16 +1,39 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 import logging
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Union
 
 from src.config.app_metadata import get_app_name
 
 logger = logging.getLogger(__name__)
+
+_WINDOWS_MAX_FILENAME_UNITS = 255
+_DEFAULT_COMPOSABLE_FILENAME_UNITS = 123
+_MAX_FILENAME_INPUT_CODEPOINTS = 4_096
+_MAX_FILENAME_COLLISION_CANDIDATES = 65_536
+_MAX_FILENAME_COLLISION_ATTEMPTS = 100_000
+_WINDOWS_INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
+_FILENAME_WHITESPACE_RE = re.compile(r'\s+')
+_FILENAME_UNDERSCORE_RE = re.compile(r'_+')
+_WINDOWS_RESERVED_FILENAME_STEMS = frozenset(
+    {
+        'aux',
+        'clock$',
+        'con',
+        'conin$',
+        'conout$',
+        'nul',
+        'prn',
+        *(f'com{index}' for index in range(1, 10)),
+        *(f'lpt{index}' for index in range(1, 10)),
+    }
+)
 
 
 def format_duration(seconds: Union[int, float]) -> str:
@@ -30,18 +53,175 @@ def format_duration(seconds: Union[int, float]) -> str:
         return "00:00"
 
 
-def safe_filename(text: str, max_length: int = 255) -> str:
-    """
-    Crea un nome file sicuro rimuovendo caratteri non validi e troncando se necessario.
-    """
-    safe_text = re.sub(r'[<>:"/\\|?*]', "", text)
-    safe_text = safe_text.strip().strip(".")
-    safe_text = safe_text.replace(" ", "_")
+def _validate_filename_limit(max_length: int) -> None:
+    if isinstance(max_length, bool) or not isinstance(max_length, int):
+        raise TypeError('max_length must be an integer')
+    if not 1 <= max_length <= _WINDOWS_MAX_FILENAME_UNITS:
+        raise ValueError(
+            f'max_length must be between 1 and {_WINDOWS_MAX_FILENAME_UNITS}'
+        )
 
-    if len(safe_text) > max_length:
-        safe_text = safe_text[:max_length]
 
-    return safe_text
+def _replace_unpaired_surrogates(text: str) -> str:
+    return ''.join(
+        '_' if 0xD800 <= ord(character) <= 0xDFFF else character
+        for character in text
+    )
+
+
+def _utf16_units(text: str) -> int:
+    return sum(2 if ord(character) > 0xFFFF else 1 for character in text)
+
+
+def _truncate_utf16(text: str, max_units: int) -> str:
+    used_units = 0
+    result: list[str] = []
+    for character in text:
+        character_units = 2 if ord(character) > 0xFFFF else 1
+        if used_units + character_units > max_units:
+            break
+        result.append(character)
+        used_units += character_units
+    return ''.join(result)
+
+
+def _normalize_filename_candidate(text: str) -> str:
+    bounded_text = text[:_MAX_FILENAME_INPUT_CODEPOINTS]
+    normalized = unicodedata.normalize('NFKC', _replace_unpaired_surrogates(bounded_text))
+    normalized = normalized.strip().strip(' .')
+    normalized = _WINDOWS_INVALID_FILENAME_RE.sub('_', normalized)
+    normalized = _FILENAME_WHITESPACE_RE.sub('_', normalized)
+    normalized = _FILENAME_UNDERSCORE_RE.sub('_', normalized)
+    candidate = normalized.rstrip(' .')
+    return '' if not candidate.strip('_') else candidate
+
+
+def _is_windows_reserved_filename(candidate: str) -> bool:
+    stem = candidate.split('.', 1)[0].rstrip(' .').casefold()
+    return stem in _WINDOWS_RESERVED_FILENAME_STEMS
+
+
+def _protect_reserved_filename(candidate: str, max_length: int) -> str:
+    if not _is_windows_reserved_filename(candidate):
+        return candidate
+    return _truncate_utf16(f'_{candidate}', max_length).rstrip(' .')
+
+
+def _sanitize_filename_component(
+    text: str,
+    *,
+    fallback: str,
+    max_length: int,
+) -> str:
+    if not isinstance(text, str):
+        raise TypeError('text must be a string')
+    if not isinstance(fallback, str):
+        raise TypeError('fallback must be a string')
+
+    candidate = _truncate_utf16(_normalize_filename_candidate(text), max_length)
+    candidate = candidate.rstrip(' .')
+    if not candidate:
+        candidate = _truncate_utf16(_normalize_filename_candidate(fallback), max_length)
+        candidate = candidate.rstrip(' .')
+    if not candidate:
+        candidate = _truncate_utf16('untitled', max_length)
+    return _protect_reserved_filename(candidate, max_length)
+
+
+def windows_filename_collision_key(name: str) -> str:
+    """Return a conservative Windows filename-equivalence key.
+
+    Edge cases:
+        1. Canonically equivalent Unicode spellings must share one key.
+        2. Case-only differences must collide on case-insensitive filesystems.
+        3. Trailing spaces or dots must not create a distinct apparent name.
+    """
+    if not isinstance(name, str):
+        raise TypeError('name must be a string')
+    candidate = _truncate_utf16(
+        _normalize_filename_candidate(name),
+        _WINDOWS_MAX_FILENAME_UNITS,
+    ).rstrip(' .')
+    return unicodedata.normalize('NFKC', candidate).casefold()
+
+
+def _split_filename_extension(candidate: str) -> tuple[str, str]:
+    stem, separator, suffix = candidate.rpartition('.')
+    if not separator or not stem:
+        return candidate, ''
+    return stem, f'.{suffix}'
+
+
+def _fit_collision_candidate(candidate: str, index: int, max_length: int) -> str:
+    suffix = f'_{index}'
+    stem, extension = _split_filename_extension(candidate)
+    suffix_units = _utf16_units(suffix)
+    extension_units = _utf16_units(extension)
+
+    if suffix_units >= max_length:
+        return _truncate_utf16(str(index), max_length)
+    if extension_units + suffix_units >= max_length:
+        extension = ''
+        extension_units = 0
+
+    stem_budget = max_length - suffix_units - extension_units
+    fitted_stem = _truncate_utf16(stem, stem_budget).rstrip(' .')
+    fitted = f'{fitted_stem}{suffix}{extension}'
+    return _protect_reserved_filename(fitted, max_length)
+
+
+def _collect_filename_collision_keys(existing_names: Iterable[str]) -> set[str]:
+    if isinstance(existing_names, (str, bytes)):
+        raise TypeError('existing_names must be an iterable of filename strings')
+
+    keys: set[str] = set()
+    for index, existing_name in enumerate(existing_names, start=1):
+        if index > _MAX_FILENAME_COLLISION_CANDIDATES:
+            raise ValueError(
+                'existing_names exceeds the bounded collision-candidate limit'
+            )
+        keys.add(windows_filename_collision_key(existing_name))
+    return keys
+
+
+def safe_filename(
+    text: str,
+    max_length: int = _DEFAULT_COMPOSABLE_FILENAME_UNITS,
+    *,
+    fallback: str = 'untitled',
+    existing_names: Iterable[str] = (),
+) -> str:
+    """Create a deterministic filename component valid on Windows.
+
+    The limit is measured in UTF-16 code units, matching the Windows filename
+    component model. The conservative default leaves room for WaveHelm's
+    composed export suffixes; callers owning the complete component may pass
+    a larger explicit limit up to 255. When ``existing_names`` is supplied,
+    collisions are resolved conservatively using NFKC normalization, case folding, and
+    Windows trailing-dot/space semantics.
+
+    Edge cases:
+        1. Reserved device names such as CON, AUX, COM1, or LPT9 are prefixed.
+        2. Empty, invalid-only, or unpaired-surrogate input uses a safe fallback.
+        3. Unicode/case-insensitive collisions receive a bounded numeric suffix.
+        4. Supplementary Unicode characters are never split across UTF-16 units.
+        5. Pathological input is bounded before Unicode normalization.
+    """
+    _validate_filename_limit(max_length)
+    candidate = _sanitize_filename_component(
+        text,
+        fallback=fallback,
+        max_length=max_length,
+    )
+    used_keys = _collect_filename_collision_keys(existing_names)
+    if windows_filename_collision_key(candidate) not in used_keys:
+        return candidate
+
+    for index in range(2, _MAX_FILENAME_COLLISION_ATTEMPTS + 2):
+        alternative = _fit_collision_candidate(candidate, index, max_length)
+        if windows_filename_collision_key(alternative) not in used_keys:
+            return alternative
+    raise ValueError('unable to allocate a unique bounded Windows filename')
 
 
 def format_file_size(size_bytes: int) -> str:

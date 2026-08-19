@@ -20,6 +20,7 @@ The project focuses on:
 
 * **Target platform:** Windows
 * **Maintained UI runtime:** wxPython
+* **Current source release:** 1.0.1
 * **Project maturity:** public GPL source release / active beta
 * **Repository model:** source-first public repository
 * **Planned convenience distribution:** possible future Microsoft Store release, handled separately from this repository baseline
@@ -28,7 +29,7 @@ The project focuses on:
 
 This repository now includes a GitHub Pages-ready public site in `docs/`.
 
-Planned public URLs after enabling GitHub Pages:
+Published public URLs:
 
 * **Home:** `https://1981-teck.github.io/WaveHelm/`
 * **Privacy policy:** `https://1981-teck.github.io/WaveHelm/privacy-policy.html`
@@ -36,15 +37,9 @@ Planned public URLs after enabling GitHub Pages:
 * **Source code and licenses:** `https://1981-teck.github.io/WaveHelm/source-code-and-licenses.html`
 * **Support:** `https://1981-teck.github.io/WaveHelm/support.html`
 
-To publish it, enable GitHub Pages from **main** → **/docs**.
+GitHub Pages is published from **main** → **/docs**.
 
 ## Screenshots
-
-### Main library and playback
-![Library View](docs/images/library_view.png) · ![Playlist View](docs/images/playlist_view.png) · ![Favorites View](docs/images/favorites_view.png)
-
-### Audio shaping and ambient workflow
-![Equalizer Page](docs/images/equalizer_page.png)
 
 ### Main library and playback
 
@@ -98,7 +93,7 @@ Additional terms under **GPLv3 section 7** also apply. In short, redistributed a
 * mark modified versions as **modified / unofficial** in a reasonable and visible way;
 * avoid using the **WaveHelm** name, branding, or the author's name to imply official status or endorsement without separate permission.
 
-The full wording is provided in [`GPL\\\_SECTION7\\\_ADDITIONAL\\\_TERMS.md`](GPL_SECTION7_ADDITIONAL_TERMS.md). WaveHelm already preserves authorship through the About / Info view and through accessible legal-notices material shipped with the application.
+The full wording is provided in [`GPL_SECTION7_ADDITIONAL_TERMS.md`](GPL_SECTION7_ADDITIONAL_TERMS.md). WaveHelm already preserves authorship through the About / Info view and through accessible legal-notices material shipped with the application.
 
 ## Maintained feature set
 
@@ -285,23 +280,23 @@ The footer mini-player remains active across the shell.
 * Video playback depends on **Windows COM** and **Media Foundation**.
 * The current build uses an **external-only** video host instead of an embedded in-app video page.
 * Audio and subtitle track selection live in **Settings** instead of a dedicated video page.
-* DSP-enabled playback can render processed copies into a `processed\\\_audio` cache.
+* DSP-enabled playback can render processed copies into a `processed_audio` cache.
 * The visualizer can run either embedded in the page or in a detached window.
 * Library, Playlist, and Favorites can keep the active item visually highlighted while playback continues elsewhere in the shell.
 
 ## Data, logs, exports, and persistence
 
-On Windows, WaveHelm stores runtime data under `%APPDATA%\\\\WaveHelm`.
+On Windows, WaveHelm stores runtime data under `%APPDATA%\WaveHelm`.
 Typical files and folders include:
 
 * `settings.json` for user settings
 * `wavehelm.db` for the SQLite persistence layer used by library, playlists, favorites, presets, and related runtime data
-* `logs\\\\wavehelm.log` for application logs
-* `processed\\\_audio\\\\` for DSP-rendered playback cache files
-* `ambient mix saved\\\\` for WAV files exported from the Ambient page
-* `effects saved\\\\` for WAV files exported from the Effects page
-* `exports\\\\wavehelm\\\_app\\\_info.json` for metadata exported from the About page
-* `licenses\\\\` for the runtime third-party notices bundle
+* `logs\wavehelm.log` for application logs
+* `processed_audio\` for DSP-rendered playback cache files
+* `ambient mix saved\` for WAV files exported from the Ambient page
+* `effects saved\` for WAV files exported from the Effects page
+* `exports\wavehelm_app_info.json` for metadata exported from the About page
+* `licenses\` for the runtime third-party notices bundle
 
 Persistence includes:
 
@@ -320,7 +315,7 @@ Managed logs are rotated automatically, and cleanup tools can remove cached/runt
 |-|-|-|
 |Operating system|Supported target: Windows|Video playback depends on Windows COM and Media Foundation APIs.|
 |macOS / Linux|Not supported|The repository can be browsed and partially tested elsewhere, but the product target is not cross-platform.|
-|Python|`>=3.10`|Recommended runtime for this repository is Python 3.12.|
+|Python|`>=3.11`|Recommended runtime for this repository is Python 3.12.|
 |UI toolkit|`wxPython`|Maintained UI runtime.|
 |Audio stack|`pygame`, `soundfile`, `numpy`, `scipy`|Required for playback and DSP features.|
 |Video stack|Windows Media Foundation, `comtypes`, `pywin32`|Required for the current video backend.|
@@ -340,13 +335,13 @@ If you distribute a frozen build, treat the video branch as Windows-only and ver
 
 ## Install and run from source
 
-For full setup instructions, see [INSTALL\_WINDOWS.md](INSTALL_WINDOWS.md).
+For full setup instructions, see [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md).
 
 Quick path:
 
 ```powershell
 python -m venv .venv
-.venv\\\\Scripts\\\\Activate.ps1
+.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python main.py
@@ -356,15 +351,18 @@ The optional `--ui-backend wx` flag is still accepted for CLI compatibility, but
 
 ## Run tests
 
+Install the development requirements and run the complete source test suite:
+
 ```powershell
+python -m pip install -r requirements-dev.txt
 python -m pytest -q tests
 ```
 
-Repository-local `pytest` cache output should not be committed; keep review and release snapshots clean when publishing updates.
+The GitHub/source release retains all test code under `tests/`. Runtime directories, SQLite databases, logs, caches, and media stubs generated by the tests are reproducible outputs and are excluded from release archives.
 
 ## Public roadmap
 
-See [ROADMAP.md](ROADMAP.md) for the short-term repository roadmap and publication priorities.
+See [ROADMAP.md](ROADMAP.md) for the short-term engineering roadmap and [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 ## Source distribution baseline
 
@@ -373,7 +371,10 @@ This repository is maintained as a **source-first Windows project**.
 The repository includes:
 
 * [pyproject.toml](pyproject.toml) with project metadata and installable entry point metadata
+* [requirements.txt](requirements.txt) and [requirements-dev.txt](requirements-dev.txt) with pinned runtime and development tooling
 * [MANIFEST.in](MANIFEST.in) for source-distribution inclusions
+* the complete source test suite under [tests](tests)
+* GitHub Actions validation under [.github/workflows](.github/workflows)
 * [docs/windows-packaging.md](docs/windows-packaging.md) with Windows runtime notes, required assets, and native dependency guidance for local source-based execution
 * a baseline legal notices bundle aligned to the maintained wx-only runtime stack
 
@@ -408,10 +409,10 @@ See [LICENSE](LICENSE) for the complete license text.
 
 * [main.py](main.py): thin entrypoint
 * [src](src): application code
-* [src/config/app\_info.json](src/config/app_info.json): product metadata consumed by runtime and About
+* [src/config/app_info.json](src/config/app_info.json): product metadata consumed by runtime and About
 * [src/resources/manual](src/resources/manual): localized in-app manual resources rendered by the Readmi view
 * [docs/screenshots](docs/screenshots): curated GitHub screenshots of the maintained UI
-* [ambient\_sounds](ambient_sounds): placeholder folder for user-provided ambient media in the public repository
+* [ambient_sounds](ambient_sounds): placeholder folder for user-provided ambient media in the public repository
 * [tests](tests): test suite
 * [AUTHORS](AUTHORS): original project authorship and attribution notes
 * [ROADMAP.md](ROADMAP.md): short-term public roadmap

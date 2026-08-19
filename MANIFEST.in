@@ -1,14 +1,26 @@
+include .gitignore
+include AUTHORS
+include CHANGELOG.md
+include GPL_SECTION7_ADDITIONAL_TERMS.md
+include INSTALL_WINDOWS.md
 include LICENSE
 include README.md
-include requirements.txt
+include ROADMAP.md
+include SECURITY.md
 include THIRD_PARTY_LICENSE_AUDIT.md
-recursive-include docs *.md
-recursive-include ambient_sounds *
-recursive-include src/resources/manual *
 include THIRD_PARTY_NOTICES.md
+include requirements.txt
+include requirements-dev.txt
+
+recursive-include .github *.yml
+include docs/.nojekyll
+recursive-include docs *.md *.html *.css *.svg *.png
+recursive-include ambient_sounds *
+recursive-include tests *.py
+recursive-include src/resources/manual *
 recursive-include src/resources/legal *
 
-include INSTALL_WINDOWS.md
-include AUTHORS
-include ROADMAP.md
-include GPL_SECTION7_ADDITIONAL_TERMS.md
+prune tests/_*_runtime*
+prune tests/_tmp_locales
+prune build
+prune dist

@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
-import shutil
-import subprocess
-from typing import Any, List, Optional
-
-
+from typing import List, Optional
 try:
     import cv2
 except ImportError:
@@ -16,6 +13,7 @@ except ImportError:
 from src.audio.audio_events import AudioEventBus, AudioEventType
 from src.model.database_manager import DatabaseManager
 from src.model.media_file import MediaFile, MediaType
+from src.utils import ffprobe_service
 from src.utils.helpers import get_app_data_path, is_audio_file, is_video_file
 from src.utils.media_metadata import (
     AudioMetadataDependencyUnavailableError,
@@ -24,8 +22,6 @@ from src.utils.media_metadata import (
 )
 
 logger = logging.getLogger(__name__)
-
-
 PATH_EXCEPTIONS = (AttributeError, OSError, TypeError, ValueError)
 FILE_IO_EXCEPTIONS = (OSError, TypeError, ValueError)
 JSON_LOAD_EXCEPTIONS = (OSError, TypeError, ValueError, json.JSONDecodeError)
@@ -41,96 +37,18 @@ AUDIO_METADATA_EXCEPTIONS = (
     ValueError,
 )
 VIDEO_METADATA_EXCEPTIONS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
-FFPROBE_EXCEPTIONS = (
-    AttributeError,
-    OSError,
-    RuntimeError,
-    TypeError,
-    ValueError,
-    subprocess.SubprocessError,
-    json.JSONDecodeError,
-)
-FFPROBE_AVAILABLE = shutil.which("ffprobe") is not None
-
-
-_LIBRARY_AUDIO_CODEC_COMPATIBILITY_ORDER = {
-    "aac": 0,
-    "mp3": 1,
-    "ac3": 2,
-    "eac3": 3,
-    "pcm_s16le": 4,
-    "pcm_s24le": 5,
-    "flac": 6,
-    "vorbis": 7,
-    "opus": 8,
-    "truehd": 20,
-    "dts": 21,
-    "dtshd": 22,
-}
-
-
 def _canon_path_win(path_value: str) -> str:
     try:
         return os.path.normcase(os.path.abspath(os.path.normpath(path_value)))
     except PATH_EXCEPTIONS:
         return path_value
 
-
-
-
-def _probe_video_duration_ffprobe(path: str) -> float:
-    """Probe a video duration with ffprobe without leaking subprocess failures.
-
-    Edge cases handled:
-    - missing ffprobe must return 0.0 deterministically
-    - malformed or blank ffprobe payloads must not break library indexing
-    - negative or non-numeric durations are clamped back to 0.0
-    """
-    if not FFPROBE_AVAILABLE:
-        return 0.0
-
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "json",
-                path,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            timeout=8.0,
-            check=False,
-        )
-        if result.returncode != 0 or not result.stdout:
-            return 0.0
-
-        payload = json.loads(result.stdout)
-        duration_raw = (payload.get("format") or {}).get("duration")
-        if duration_raw in (None, ""):
-            return 0.0
-        return max(0.0, float(duration_raw))
-    except FFPROBE_EXCEPTIONS as error:
-        logger.debug("[Library] ffprobe video duration failed for '%s': %s", path, error, exc_info=True)
-        return 0.0
-
-
 def _read_library_video_duration(path: str) -> float:
-    """Return a best-effort video duration for library rows.
+    """Return a finite video duration without blocking library indexing.
 
-    Edge cases handled:
-    - OpenCV may be unavailable and must fall back to ffprobe without hard-failing
-    - corrupted containers or zero-fps streams must collapse to 0.0
-    - ffprobe failures must not block library restore/import flows
+    Edge cases: unavailable/corrupt OpenCV; invalid rates/counts; typed ffprobe failures.
     """
     duration = 0.0
-
     if cv2 is not None:
         capture = None
         try:
@@ -138,226 +56,43 @@ def _read_library_video_duration(path: str) -> float:
             if capture and capture.isOpened():
                 fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
                 frame_count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
-                if fps > 0.0 and frame_count > 0.0:
-                    duration = max(0.0, frame_count / fps)
+                if math.isfinite(fps) and math.isfinite(frame_count):
+                    if fps > 0.0 and frame_count > 0.0:
+                        duration = max(0.0, frame_count / fps)
         except VIDEO_METADATA_EXCEPTIONS as error:
-            logger.debug("[Library] OpenCV video duration failed for '%s': %s", path, error, exc_info=True)
+            logger.debug("[Library] OpenCV duration failed for '%s': %s", path, error)
         finally:
-            try:
-                if capture is not None:
+            if capture is not None:
+                try:
                     capture.release()
-            except VIDEO_METADATA_EXCEPTIONS:
-                logger.debug("[Library] VideoCapture release failed for '%s'", path, exc_info=True)
-
-    if duration <= 0.0:
-        duration = _probe_video_duration_ffprobe(path)
-    return duration
-
-def _probe_library_video_audio_tracks(path: str) -> list[dict[str, Any]]:
-    """Return normalized ffprobe audio tracks for one video library row.
-
-    Edge cases handled:
-    - ffprobe can be unavailable and must degrade to an empty list without blocking indexing
-    - malformed or blank ffprobe payloads must not leak exceptions into library restore/import flows
-    - mixed-container probes can include unsupported/non-audio streams that must be ignored deterministically
-    """
-    if not FFPROBE_AVAILABLE:
-        return []
-
+                except VIDEO_METADATA_EXCEPTIONS as error:
+                    logger.debug("[Library] VideoCapture release failed for '%s': %s", path, error)
+    if duration > 0.0:
+        return duration
     try:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "stream=index,codec_type,codec_name,codec_long_name,channels,channel_layout:stream_tags=language,title:stream_disposition=default,forced",
-                "-of",
-                "json",
-                path,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            timeout=8.0,
-            check=False,
-        )
-        if result.returncode != 0 or not result.stdout:
-            return []
-        payload = json.loads(result.stdout)
-    except FFPROBE_EXCEPTIONS as error:
-        logger.debug("[Library] ffprobe audio tracks failed for '%s': %s", path, error, exc_info=True)
-        return []
+        return ffprobe_service.probe_duration(path)
+    except ffprobe_service.FfprobeError as error:
+        logger.debug("[Library] ffprobe duration failed for '%s': %s", path, error)
+        return 0.0
 
-    return _parse_library_video_audio_tracks(payload)
+def _read_library_video_metadata(path: str) -> dict[str, object]:
+    """Return JSON-safe video audio metadata through the bounded probe boundary.
 
-
-
-def _parse_library_video_audio_tracks(payload: object) -> list[dict[str, Any]]:
-    """Normalize ffprobe audio stream payloads for library video metadata.
-
-    Edge cases handled:
-    - payloads can miss the streams array entirely and must collapse to an empty list
-    - duplicate or invalid stream indices must be dropped before reaching the playback layer
-    - missing language/title/disposition fields must still produce stable bounded dictionaries
-    """
-    streams = payload.get("streams") if isinstance(payload, dict) else None
-    if not isinstance(streams, list):
-        return []
-
-    tracks: list[dict[str, Any]] = []
-    for stream in streams:
-        if not isinstance(stream, dict) or stream.get("codec_type") != "audio":
-            continue
-        entry = _build_library_video_audio_track(stream, len(tracks))
-        if entry is not None:
-            tracks.append(entry)
-
-    tracks.sort(key=lambda item: (item["stream_index"], item["track_index"]))
-    return tracks
-
-
-
-def _build_library_video_audio_track(stream: dict[str, Any], ordinal: int) -> dict[str, Any] | None:
-    """Build one stable audio-track record for persisted video metadata.
-
-    Edge cases handled:
-    - stream indexes can be missing or malformed and must be rejected cleanly
-    - absent channel metadata must degrade to bounded primitives instead of raw ffprobe values
-    - empty language/title tags must remain visible as empty strings so UI fallback labeling stays deterministic
+    Edge cases: unavailable ffprobe; malformed streams; deterministic candidate ordering.
     """
     try:
-        stream_index = int(stream.get("index"))
-    except (TypeError, ValueError):
-        return None
-    if stream_index < 0:
-        return None
-
-    tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
-    disposition = stream.get("disposition") if isinstance(stream.get("disposition"), dict) else {}
-    codec_name = str(stream.get("codec_name") or "").strip().lower()
-    language = str(tags.get("language") or "").strip().lower()
-    title = str(tags.get("title") or "").strip()
-    channel_layout = str(stream.get("channel_layout") or "").strip()
-    try:
-        channels = max(0, int(stream.get("channels") or 0))
-    except (TypeError, ValueError):
-        channels = 0
-
-    return {
-        "stream_index": stream_index,
-        "track_index": ordinal,
-        "language": language,
-        "title": title,
-        "codec_name": codec_name,
-        "codec_long_name": str(stream.get("codec_long_name") or "").strip(),
-        "channels": channels,
-        "channel_layout": channel_layout,
-        "is_default": bool(int(disposition.get("default") or 0)),
-        "is_forced": bool(int(disposition.get("forced") or 0)),
-        "label": _format_library_video_audio_label(ordinal, language, title, codec_name, channel_layout, channels),
-    }
-
-
-
-def _format_library_video_audio_label(
-    ordinal: int,
-    language: str,
-    title: str,
-    codec_name: str,
-    channel_layout: str,
-    channels: int,
-) -> str:
-    """Return a stable audio label for video metadata cached in the library.
-
-    Edge cases handled:
-    - missing language/title tags must still yield a non-empty label for selector UIs
-    - absent channel layouts must degrade to a bounded channel-count suffix when available
-    - unknown codecs must remain visible for diagnostics and manual track selection
-    """
-    parts = [f"Track {ordinal + 1}"]
-    if language:
-        parts.append(language)
-    if title:
-        parts.append(title)
-    if codec_name:
-        parts.append(codec_name.upper())
-    if channel_layout:
-        parts.append(channel_layout)
-    elif channels > 0:
-        parts.append("1 ch" if channels == 1 else f"{channels} ch")
-    return " — ".join(parts)
-
-
-
-def _build_library_video_audio_candidates(audio_tracks: list[dict[str, Any]]) -> list[int]:
-    """Return a deterministic compatibility-first audio candidate order for videos.
-
-    Edge cases handled:
-    - empty inventories must return an empty candidate list without leaking stale state
-    - duplicate or negative stream indices must be discarded before ranking
-    - default flags must remain tie-breakers instead of outranking clearly unsupported codecs
-    """
-    ordered: list[tuple[tuple[int, int, int, int], int]] = []
-    seen: set[int] = set()
-    for track in audio_tracks:
-        try:
-            stream_index = int(track.get("stream_index"))
-        except (AttributeError, TypeError, ValueError):
-            continue
-        if stream_index < 0 or stream_index in seen:
-            continue
-        seen.add(stream_index)
-        ordered.append((_library_video_audio_sort_key(track), stream_index))
-    ordered.sort(key=lambda item: item[0])
-    return [stream_index for _, stream_index in ordered]
-
-
-
-def _library_video_audio_sort_key(track: dict[str, Any]) -> tuple[int, int, int, int]:
-    """Rank audio tracks so broadly compatible codecs win before default-only preferences.
-
-    Edge cases handled:
-    - unknown codec families must remain sortable with a stable low-priority bucket
-    - default/forced flags still break ties among equally compatible codecs
-    - stream index remains the deterministic final tie-breaker across rebuilds/restores
-    """
-    codec_name = str(track.get("codec_name") or "").strip().lower()
-    compatibility_rank = _LIBRARY_AUDIO_CODEC_COMPATIBILITY_ORDER.get(codec_name, 10)
-    default_rank = 0 if bool(track.get("is_default")) else 1
-    forced_rank = 0 if bool(track.get("is_forced")) else 1
-    try:
-        stream_index = int(track.get("stream_index"))
-    except (AttributeError, TypeError, ValueError):
-        stream_index = 1_000_000
-    return (compatibility_rank, default_rank, forced_rank, stream_index)
-
-
-
-def _read_library_video_metadata(path: str) -> dict[str, Any]:
-    """Return persisted video metadata needed for audio-track fallback and selector UIs.
-
-    Edge cases handled:
-    - ffprobe can be unavailable or fail and must leave video rows indexable with empty metadata
-    - files without multiple audio tracks must still serialize a stable empty/one-track structure
-    - metadata snapshots must stay JSON-serializable because they are persisted in the library database
-    """
-    audio_tracks = _probe_library_video_audio_tracks(path)
+        audio_tracks = ffprobe_service.probe_audio_tracks(path)
+    except ffprobe_service.FfprobeError as error:
+        logger.debug("[Library] ffprobe audio tracks failed for '%s': %s", path, error)
+        audio_tracks = []
     return {
         "audio_tracks": audio_tracks,
-        "audio_track_candidates": _build_library_video_audio_candidates(audio_tracks),
+        "audio_track_candidates": ffprobe_service.build_audio_track_candidates(audio_tracks),
     }
-
-
-
 def _summarize_library_payload_for_debug(content: str, payload: object) -> str:
     """Return a privacy-preserving summary for library restore debug logs.
 
-    Edge cases handled:
-    - malformed or non-list payloads must not be logged as raw content
-    - non-string list entries must be summarized without assuming path semantics
-    - very large libraries must produce bounded debug output
+    Edge cases: non-list payloads; non-string entries; large libraries.
     """
     char_count = len(content)
     if not isinstance(payload, list):
@@ -376,14 +111,10 @@ def _summarize_library_payload_for_debug(content: str, payload: object) -> str:
         f"preview={preview}{suffix}"
     )
 
-
 def _read_library_audio_metadata(path: str, fallback_title: str) -> tuple[str, float, dict[str, str]]:
-    """Return normalized audio metadata for library indexing without hard-failing imports.
+    """Return normalized audio metadata without hard-failing library imports.
 
-    Edge cases handled:
-    - missing, corrupted, or unsupported tags fall back to filename and empty metadata
-    - blank text tags are ignored so search/index state stays deterministic
-    - invalid or absent duration values stay clamped to 0.0 through the shared adapter
+    Edge cases: missing/corrupt tags; blank text tags; invalid durations.
     """
     title = fallback_title
     duration = 0.0
@@ -404,7 +135,6 @@ def _read_library_audio_metadata(path: str, fallback_title: str) -> tuple[str, f
     if tag_data.duration > 0.0:
         duration = float(tag_data.duration)
     return title, duration, metadata
-
 
 class LibraryController:
     """Controller della Libreria."""
@@ -674,10 +404,11 @@ class LibraryController:
 
         title = os.path.basename(path)
         duration = 0.0
-        metadata: dict[str, str] = {}
+        metadata: dict[str, object] = {}
 
         if media_type is MediaType.AUDIO:
-            title, duration, metadata = _read_library_audio_metadata(path, title)
+            title, duration, audio_metadata = _read_library_audio_metadata(path, title)
+            metadata = dict(audio_metadata)
         else:
             duration = _read_library_video_duration(path)
             metadata = _read_library_video_metadata(path)
