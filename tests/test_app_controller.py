@@ -1,24 +1,14 @@
 from __future__ import annotations
 
+import importlib
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
-sys.modules.setdefault('pygame', SimpleNamespace(error=RuntimeError, mixer=SimpleNamespace(get_init=lambda: False, quit=lambda: None, init=lambda *args, **kwargs: None, music=SimpleNamespace(set_volume=lambda *args, **kwargs: None))))
-sys.modules.setdefault('soundfile', SimpleNamespace())
-
-class _VideoControllerType:
-    pass
-
-sys.modules.setdefault('src.controller.video_controller', SimpleNamespace(VideoController=_VideoControllerType))
-
 from src.audio.audio_events import AudioEventBus
-from src.audio.audio_engine import AudioEngine
 from src.audio.effects import EffectsEngine
 from src.audio.equalizer import Equalizer
-from src.controller import app_controller as app_mod
-from src.controller.app_controller import AppController
 from src.controller.effects_controller import EffectsController
 from src.controller.equalizer_controller import EqualizerController
 from src.controller.library_controller import LibraryController
@@ -33,6 +23,52 @@ from src.model.media_loader import MediaLoader
 from src.model.profile_manager import ProfileManager
 from src.model.setting_manager import SettingsManager
 from src.model.theme_manager import ThemeManager
+
+
+class _AudioEngineType:
+    pass
+
+
+@pytest.fixture
+def app_api(monkeypatch):
+    """Import AppController without leaking dependency stubs into pytest collection.
+
+    The AppController unit tests do not exercise AudioEngine itself, so only that
+    heavy dependency is replaced while this fixture imports app_controller. The
+    real VideoController module remains untouched and visible to the full suite.
+    """
+    fake_audio_module = ModuleType('src.audio.audio_engine')
+    fake_audio_module.AudioEngine = _AudioEngineType
+
+    audio_package = importlib.import_module('src.audio')
+    controller_package = importlib.import_module('src.controller')
+    previous_audio_attr = getattr(audio_package, 'audio_engine', None)
+    previous_app_attr = getattr(controller_package, 'app_controller', None)
+    had_audio_attr = hasattr(audio_package, 'audio_engine')
+    had_app_attr = hasattr(controller_package, 'app_controller')
+
+    monkeypatch.setitem(sys.modules, 'src.audio.audio_engine', fake_audio_module)
+    monkeypatch.delitem(sys.modules, 'src.controller.app_controller', raising=False)
+    setattr(audio_package, 'audio_engine', fake_audio_module)
+    if had_app_attr:
+        delattr(controller_package, 'app_controller')
+
+    app_module = importlib.import_module('src.controller.app_controller')
+    try:
+        yield SimpleNamespace(
+            module=app_module,
+            AppController=app_module.AppController,
+            AudioEngine=app_module.AudioEngine,
+        )
+    finally:
+        if had_audio_attr:
+            setattr(audio_package, 'audio_engine', previous_audio_attr)
+        elif hasattr(audio_package, 'audio_engine'):
+            delattr(audio_package, 'audio_engine')
+        if had_app_attr:
+            setattr(controller_package, 'app_controller', previous_app_attr)
+        elif hasattr(controller_package, 'app_controller'):
+            delattr(controller_package, 'app_controller')
 
 
 class DummyQtRoot:
@@ -168,7 +204,7 @@ class DummyServiceContainer:
         self.close_services_calls += 1
 
 
-def _build_services():
+def _build_services(app_api):
     event_bus = DummyEventBus()
     player = DummyPlayerController()
     video = DummyVideoController()
@@ -179,7 +215,7 @@ def _build_services():
         DatabaseManager: SimpleNamespace(),
         ProfileManager: SimpleNamespace(),
         SettingsManager: SimpleNamespace(),
-        AudioEngine: SimpleNamespace(),
+        app_api.AudioEngine: SimpleNamespace(),
         AmbientManager: SimpleNamespace(),
         PlayerController: player,
         LibraryController: SimpleNamespace(),
@@ -195,12 +231,17 @@ def _build_services():
     return services, event_bus, player, video
 
 
-def test_initialize_app_builds_main_view_and_wires_player(monkeypatch):
-    monkeypatch.setattr(app_mod, '_get_main_view_class', lambda ui_backend=None: DummyMainView)
-    services, event_bus, player, video = _build_services()
+def test_app_controller_uses_real_video_controller_module(app_api):
+    assert VideoController.__module__ == 'src.controller.video_controller'
+    assert app_api.module.VideoController is VideoController
+
+
+def test_initialize_app_builds_main_view_and_wires_player(monkeypatch, app_api):
+    monkeypatch.setattr(app_api.module, '_get_main_view_class', lambda ui_backend=None: DummyMainView)
+    services, event_bus, player, video = _build_services(app_api)
     root = DummyQtRoot()
     container = DummyServiceContainer(services)
-    controller = AppController(root=root, service_container=container)
+    controller = app_api.AppController(root=root, service_container=container)
 
     class FakeQtDispatcher:
         def __init__(self):
@@ -211,7 +252,7 @@ def test_initialize_app_builds_main_view_and_wires_player(monkeypatch):
             callback()
 
     fake_dispatcher = FakeQtDispatcher()
-    monkeypatch.setattr(app_mod, 'build_ui_dispatcher', lambda root, ui_backend=None: fake_dispatcher)
+    monkeypatch.setattr(app_api.module, 'build_ui_dispatcher', lambda root, ui_backend=None: fake_dispatcher)
 
     controller.initialize_app()
 
@@ -229,9 +270,9 @@ def test_initialize_app_builds_main_view_and_wires_player(monkeypatch):
 
 
 
-def test_initialize_app_builds_wx_dispatcher_when_requested(monkeypatch):
-    monkeypatch.setattr(app_mod, '_get_main_view_class', lambda ui_backend=None: DummyMainView)
-    services, event_bus, player, video = _build_services()
+def test_initialize_app_builds_wx_dispatcher_when_requested(monkeypatch, app_api):
+    monkeypatch.setattr(app_api.module, '_get_main_view_class', lambda ui_backend=None: DummyMainView)
+    services, event_bus, player, video = _build_services(app_api)
     container = DummyServiceContainer(services)
     calls = []
 
@@ -242,7 +283,7 @@ def test_initialize_app_builds_wx_dispatcher_when_requested(monkeypatch):
             callback()
 
     monkeypatch.setitem(sys.modules, 'wx', FakeWxModule)
-    controller = AppController(root=object(), service_container=container, ui_backend='wx')
+    controller = app_api.AppController(root=object(), service_container=container, ui_backend='wx')
 
     controller.initialize_app()
     dispatched = []
@@ -252,27 +293,27 @@ def test_initialize_app_builds_wx_dispatcher_when_requested(monkeypatch):
     assert calls == ['wx-callafter']
 
 
-def test_jit_create_video_controller_returns_none_when_service_lookup_fails():
-    services, event_bus, player, video = _build_services()
+def test_jit_create_video_controller_returns_none_when_service_lookup_fails(app_api):
+    services, event_bus, player, video = _build_services(app_api)
     services.pop(VideoController)
-    controller = AppController(root=None, service_container=DummyServiceContainer(services))
+    controller = app_api.AppController(root=None, service_container=DummyServiceContainer(services))
 
     assert controller.jit_create_video_controller() is None
 
 
-def test_run_main_loop_rejects_non_qt_root():
-    services, event_bus, player, video = _build_services()
+def test_run_main_loop_rejects_non_qt_root(app_api):
+    services, event_bus, player, video = _build_services(app_api)
     root = object()
-    controller = AppController(root=root, service_container=DummyServiceContainer(services))
+    controller = app_api.AppController(root=root, service_container=DummyServiceContainer(services))
 
     with pytest.raises(RuntimeError, match='exec'):
         controller.run_main_loop()
 
 
-def test_run_main_loop_uses_root_exec_when_available():
-    services, event_bus, player, video = _build_services()
+def test_run_main_loop_uses_root_exec_when_available(app_api):
+    services, event_bus, player, video = _build_services(app_api)
     root = DummyQtRoot(result=7)
-    controller = AppController(root=root, service_container=DummyServiceContainer(services))
+    controller = app_api.AppController(root=root, service_container=DummyServiceContainer(services))
 
     result = controller.run_main_loop()
 
@@ -280,21 +321,21 @@ def test_run_main_loop_uses_root_exec_when_available():
     assert root.exec_calls == 1
 
 
-def test_run_main_loop_propagates_exec_failures():
-    services, event_bus, player, video = _build_services()
+def test_run_main_loop_propagates_exec_failures(app_api):
+    services, event_bus, player, video = _build_services(app_api)
     root = DummyQtRoot(error=RuntimeError("exec failed"))
-    controller = AppController(root=root, service_container=DummyServiceContainer(services))
+    controller = app_api.AppController(root=root, service_container=DummyServiceContainer(services))
 
     with pytest.raises(RuntimeError, match="exec failed"):
         controller.run_main_loop()
 
 
-def test_shutdown_closes_components_once(monkeypatch):
-    monkeypatch.setattr(app_mod, '_get_main_view_class', lambda ui_backend=None: DummyMainView)
-    services, event_bus, player, video = _build_services()
+def test_shutdown_closes_components_once(monkeypatch, app_api):
+    monkeypatch.setattr(app_api.module, '_get_main_view_class', lambda ui_backend=None: DummyMainView)
+    services, event_bus, player, video = _build_services(app_api)
     root = DummyQtRoot()
     container = DummyServiceContainer(services)
-    controller = AppController(root=root, service_container=container)
+    controller = app_api.AppController(root=root, service_container=container)
     controller.initialize_app()
 
     controller.shutdown()
@@ -309,10 +350,10 @@ def test_shutdown_closes_components_once(monkeypatch):
     assert root.quit_calls == 1
 
 
-def test_initialize_app_wires_main_view_shutdown_signal(monkeypatch):
-    monkeypatch.setattr(app_mod, '_get_main_view_class', lambda ui_backend=None: DummyMainView)
-    services, event_bus, player, video = _build_services()
-    controller = AppController(root=DummyQtRoot(), service_container=DummyServiceContainer(services))
+def test_initialize_app_wires_main_view_shutdown_signal(monkeypatch, app_api):
+    monkeypatch.setattr(app_api.module, '_get_main_view_class', lambda ui_backend=None: DummyMainView)
+    services, event_bus, player, video = _build_services(app_api)
+    controller = app_api.AppController(root=DummyQtRoot(), service_container=DummyServiceContainer(services))
 
     controller.initialize_app()
     controller.main_view.shutdown_requested.emit()
@@ -335,9 +376,9 @@ class OrderedComponent:
         self.calls.append(self.label)
 
 
-def test_shutdown_stops_player_then_closes_main_view_then_video_then_event_bus():
+def test_shutdown_stops_player_then_closes_main_view_then_video_then_event_bus(app_api):
     calls = []
-    controller = AppController(root=DummyQtRoot(), service_container=DummyServiceContainer({}))
+    controller = app_api.AppController(root=DummyQtRoot(), service_container=DummyServiceContainer({}))
     controller.main_view = OrderedComponent('main_view', calls)
     controller._video_controller_instance = OrderedComponent('video_controller', calls)
 
@@ -367,10 +408,10 @@ def test_shutdown_stops_player_then_closes_main_view_then_video_then_event_bus()
     assert quit_calls == ['quit']
 
 
-def test_run_main_loop_uses_wx_main_loop_when_available():
-    services, event_bus, player, video = _build_services()
+def test_run_main_loop_uses_wx_main_loop_when_available(app_api):
+    services, event_bus, player, video = _build_services(app_api)
     root = DummyWxRoot(result=11)
-    controller = AppController(root=root, service_container=DummyServiceContainer(services), ui_backend='wx')
+    controller = app_api.AppController(root=root, service_container=DummyServiceContainer(services), ui_backend='wx')
 
     result = controller.run_main_loop()
 
@@ -378,12 +419,12 @@ def test_run_main_loop_uses_wx_main_loop_when_available():
     assert root.main_loop_calls == 1
 
 
-def test_shutdown_requests_wx_exit_main_loop(monkeypatch):
-    monkeypatch.setattr(app_mod, '_get_main_view_class', lambda ui_backend=None: DummyMainView)
-    services, event_bus, player, video = _build_services()
+def test_shutdown_requests_wx_exit_main_loop(monkeypatch, app_api):
+    monkeypatch.setattr(app_api.module, '_get_main_view_class', lambda ui_backend=None: DummyMainView)
+    services, event_bus, player, video = _build_services(app_api)
     root = DummyWxRoot()
     container = DummyServiceContainer(services)
-    controller = AppController(root=root, service_container=container, ui_backend='wx')
+    controller = app_api.AppController(root=root, service_container=container, ui_backend='wx')
 
     controller.initialize_app()
     controller.shutdown()
@@ -392,13 +433,13 @@ def test_shutdown_requests_wx_exit_main_loop(monkeypatch):
     assert controller.main_view.show_calls == 1
 
 
-def test_initialize_app_uses_backend_specific_main_view(monkeypatch):
+def test_initialize_app_uses_backend_specific_main_view(monkeypatch, app_api):
     class DummyWxMainView(DummyMainView):
         pass
 
-    monkeypatch.setattr(app_mod, '_get_main_view_class', lambda ui_backend=None: DummyWxMainView if ui_backend == 'wx' else DummyMainView)
-    services, event_bus, player, video = _build_services()
-    controller = AppController(root=DummyWxRoot(), service_container=DummyServiceContainer(services), ui_backend='wx')
+    monkeypatch.setattr(app_api.module, '_get_main_view_class', lambda ui_backend=None: DummyWxMainView if ui_backend == 'wx' else DummyMainView)
+    services, event_bus, player, video = _build_services(app_api)
+    controller = app_api.AppController(root=DummyWxRoot(), service_container=DummyServiceContainer(services), ui_backend='wx')
 
     controller.initialize_app()
 
