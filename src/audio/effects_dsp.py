@@ -38,28 +38,6 @@ def apply_echo(audio_data: np.ndarray, delay_samples: int, decay: float) -> np.n
     return output_data
 
 
-def _comb_filter(data, delay, gain):
-    """Filtro comb per il riverbero."""
-    output = np.zeros_like(data)
-    buffer = np.zeros(delay)
-    for i, sample in enumerate(data):
-        delayed_sample = buffer[i % delay]
-        buffer[i % delay] = sample + delayed_sample * gain
-        output[i] = delayed_sample
-    return output
-
-
-def _allpass_filter(data, delay, gain):
-    """Filtro all-pass per il riverbero."""
-    output = np.zeros_like(data)
-    buffer = np.zeros(delay)
-    for i, sample in enumerate(data):
-        delayed_sample = buffer[i % delay]
-        buffer[i % delay] = sample + delayed_sample * gain
-        output[i] = delayed_sample * gain + sample
-    return output
-
-
 def _add_delayed_mix(
     target: np.ndarray, source: np.ndarray, delay_samples: int, gain: float
 ) -> None:
