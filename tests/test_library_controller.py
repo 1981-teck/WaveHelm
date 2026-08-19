@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 import src.controller.library_controller as library_module
 from src.audio.audio_events import AudioEventType
 from src.controller.library_controller import LibraryController, _canon_path_win
 from src.model.media_file import MediaFile, MediaType
+from src.utils import ffprobe_service
 from src.utils.media_metadata import AudioTagMetadata
 
 
@@ -178,105 +180,87 @@ def test_remove_media_search_and_create_media_from_path(monkeypatch):
 
 
 def test_create_media_from_path_populates_video_audio_metadata_and_candidates(monkeypatch):
-    controller, _, _, runtime_dir = _make_controller(monkeypatch, 'video_audio_metadata')
-    video_file = runtime_dir / 'movie.mkv'
-    video_file.write_text('x', encoding='utf-8')
-
-    monkeypatch.setattr(library_module, 'is_audio_file', lambda path: False)
-    monkeypatch.setattr(library_module, 'is_video_file', lambda path: str(path).endswith('.mkv'))
-    monkeypatch.setattr(library_module, '_read_library_video_duration', lambda path: 123.4)
-    monkeypatch.setattr(
-        library_module,
-        '_probe_library_video_audio_tracks',
-        lambda path: [
-            {
-                'stream_index': 4,
-                'track_index': 0,
-                'language': 'eng',
-                'title': 'Atmos',
-                'codec_name': 'truehd',
-                'codec_long_name': 'TrueHD',
-                'channels': 8,
-                'channel_layout': '7.1',
-                'is_default': True,
-                'is_forced': False,
-                'label': 'Track 1 — eng — Atmos — TRUEHD — 7.1',
-            },
-            {
-                'stream_index': 1,
-                'track_index': 1,
-                'language': 'ita',
-                'title': 'Dub',
-                'codec_name': 'ac3',
-                'codec_long_name': 'AC-3',
-                'channels': 6,
-                'channel_layout': '5.1',
-                'is_default': False,
-                'is_forced': False,
-                'label': 'Track 2 — ita — Dub — AC3 — 5.1',
-            },
-        ],
+    controller, _, _, runtime_dir = _make_controller(monkeypatch, "video_audio_metadata")
+    video_file = runtime_dir / "movie.mkv"
+    video_file.write_text("x", encoding="utf-8")
+    tracks = [
+        {
+            "stream_index": 4,
+            "track_index": 0,
+            "language": "eng",
+            "title": "Atmos",
+            "codec_name": "truehd",
+            "codec_long_name": "TrueHD",
+            "channels": 8,
+            "channel_layout": "7.1",
+            "is_default": True,
+            "is_forced": False,
+            "label": "Track 1 — eng — Atmos — TRUEHD — 7.1",
+        },
+        {
+            "stream_index": 1,
+            "track_index": 1,
+            "language": "ita",
+            "title": "Dub",
+            "codec_name": "ac3",
+            "codec_long_name": "AC-3",
+            "channels": 6,
+            "channel_layout": "5.1",
+            "is_default": False,
+            "is_forced": False,
+            "label": "Track 2 — ita — Dub — AC3 — 5.1",
+        },
+    ]
+    monkeypatch.setattr(library_module, "is_audio_file", lambda path: False)
+    monkeypatch.setattr(library_module, "is_video_file", lambda path: str(path).endswith(".mkv"))
+    fake_cv2 = SimpleNamespace(
+        CAP_PROP_FPS=1,
+        CAP_PROP_FRAME_COUNT=2,
+        VideoCapture=lambda path: SimpleNamespace(
+            isOpened=lambda: True,
+            get=lambda prop: float("inf") if prop == 1 else 600.0,
+            release=lambda: None,
+        ),
     )
+    monkeypatch.setattr(library_module, "cv2", fake_cv2)
+    monkeypatch.setattr(ffprobe_service, "probe_duration", lambda path: 123.4)
+    monkeypatch.setattr(ffprobe_service, "probe_audio_tracks", lambda path: tracks)
 
     video_media = controller._create_media_from_path(str(video_file))
 
     assert video_media.media_type == MediaType.VIDEO
     assert round(video_media.duration, 1) == 123.4
-    assert [track['stream_index'] for track in video_media.metadata['audio_tracks']] == [4, 1]
-    assert video_media.metadata['audio_track_candidates'] == [1, 4]
+    assert [track["stream_index"] for track in video_media.metadata["audio_tracks"]] == [4, 1]
+    assert video_media.metadata["audio_track_candidates"] == [1, 4]
 
 
-
-def test_probe_library_video_audio_tracks_ignores_invalid_streams_and_normalizes_fields(monkeypatch):
-    monkeypatch.setattr(library_module, 'FFPROBE_AVAILABLE', True)
-
-    class Result:
-        returncode = 0
-        stdout = json.dumps(
-            {
-                'streams': [
-                    {'codec_type': 'video', 'index': 0},
-                    {
-                        'codec_type': 'audio',
-                        'index': '2',
-                        'codec_name': 'eac3',
-                        'codec_long_name': 'E-AC-3',
-                        'channels': '6',
-                        'channel_layout': '5.1',
-                        'tags': {'language': 'ita', 'title': 'Main'},
-                        'disposition': {'default': 1, 'forced': 0},
-                    },
-                    {
-                        'codec_type': 'audio',
-                        'index': '-1',
-                        'codec_name': 'ac3',
-                    },
-                    {
-                        'codec_type': 'audio',
-                        'index': 'bad',
-                        'codec_name': 'aac',
-                    },
-                ]
-            }
-        )
-        stderr = ''
-
-    monkeypatch.setattr(library_module.subprocess, 'run', lambda *args, **kwargs: Result())
-
-    tracks = library_module._probe_library_video_audio_tracks('movie.mkv')
-
-    assert tracks == [
+def test_read_library_video_metadata_uses_shared_probe_and_fails_closed(monkeypatch):
+    tracks = [
         {
-            'stream_index': 2,
-            'track_index': 0,
-            'language': 'ita',
-            'title': 'Main',
-            'codec_name': 'eac3',
-            'codec_long_name': 'E-AC-3',
-            'channels': 6,
-            'channel_layout': '5.1',
-            'is_default': True,
-            'is_forced': False,
-            'label': 'Track 1 — ita — Main — EAC3 — 5.1',
+            "stream_index": 2,
+            "track_index": 0,
+            "language": "ita",
+            "title": "Main",
+            "codec_name": "eac3",
+            "codec_long_name": "E-AC-3",
+            "channels": 6,
+            "channel_layout": "5.1",
+            "is_default": True,
+            "is_forced": False,
+            "label": "Track 1 — ita — Main — EAC3 — 5.1",
         }
     ]
+    monkeypatch.setattr(ffprobe_service, "probe_audio_tracks", lambda path: tracks)
+    metadata = library_module._read_library_video_metadata("movie.mkv")
+    assert metadata["audio_tracks"] == tracks
+    assert metadata["audio_track_candidates"] == [2]
+
+    def raise_timeout(path: str):
+        raise ffprobe_service.FfprobeTimeoutError("timeout")
+
+    monkeypatch.setattr(ffprobe_service, "probe_audio_tracks", raise_timeout)
+    assert library_module._read_library_video_metadata("movie.mkv") == {
+        "audio_tracks": [],
+        "audio_track_candidates": [],
+    }
+

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 APP_NAME_FALLBACK = "WaveHelm"
-APP_VERSION_FALLBACK = "1.0"
+APP_VERSION_FALLBACK = "1.0.1"
 APP_TARGET_PLATFORM_FALLBACK = "Windows"
 APP_WEBSITE_URL_FALLBACK = "https://1981-teck.github.io/WaveHelm/"
 APP_AUTHOR_FALLBACK = "Pastoris Marco Vincenzo"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 
@@ -121,14 +122,14 @@ class DummyDatabaseManager:
     def __init__(self) -> None:
         self.items = [
             {
-                'path': '/tmp/favorite_a.mp3',
+                'path': os.path.normpath('/tmp/favorite_a.mp3'),
                 'title': 'Alpha',
                 'media_type': MediaType.AUDIO.value,
                 'duration': 61.0,
                 'metadata': {'artist': 'Able'},
             },
             {
-                'path': '/tmp/favorite_b.mp4',
+                'path': os.path.normpath('/tmp/favorite_b.mp4'),
                 'title': 'Beta',
                 'media_type': MediaType.VIDEO.value,
                 'duration': 122.0,
@@ -195,7 +196,10 @@ def test_wx_favorites_view_play_remove_select_all_and_refresh(monkeypatch):
     assert view.table.GetFirstSelected() == 0
 
     view._on_remove_selected()
-    assert database_manager.removed == ['/tmp/favorite_a.mp3', '/tmp/favorite_b.mp4']
+    assert database_manager.removed == [
+        os.path.normpath('/tmp/favorite_a.mp3'),
+        os.path.normpath('/tmp/favorite_b.mp4'),
+    ]
     assert view.table.GetItemCount() == 0
     assert event_bus.published[-1][0] == AudioEventType.FEEDBACK_MESSAGE
 

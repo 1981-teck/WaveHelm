@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from src.audio.audio_events import AudioEventType
-from src.model.media_file import MediaFile, MediaType
+from src.model.media_file import MediaFile, MediaFileValidationError, MediaType
 
 logger = logging.getLogger(__name__)
 
@@ -246,44 +247,45 @@ def get_playlist_track_count(self, playlist_id: int) -> int:
 
 
 def _build_media_from_playlist_row(
-    self, path: str, playlist_row: Optional[Dict[str, Any]]
+    self, path: str, playlist_row: Mapping[str, object] | None
 ) -> Optional[MediaFile]:
+    """Reconstruct a playlist item through the strict MediaFile boundary.
+
+    Edge cases handled:
+    - missing paths cannot create placeholder queue items;
+    - malformed duration, metadata, and enum values reject the complete row;
+    - extra persistence columns remain forward-compatible and are ignored.
+    """
     if not path:
         return None
 
-    metadata = {}
-    if isinstance(playlist_row, dict):
+    record: dict[str, object] = {
+        "path": path,
+        "title": Path(path).stem,
+        "media_type": MediaType.UNKNOWN,
+        "duration": 0.0,
+        "metadata": {},
+    }
+    if isinstance(playlist_row, Mapping):
+        raw_title = playlist_row.get("title")
+        raw_media_type = playlist_row.get("media_type")
+        raw_duration = playlist_row.get("duration")
         raw_metadata = playlist_row.get("metadata")
-        if isinstance(raw_metadata, dict):
-            metadata = dict(raw_metadata)
-
-    media_type_value = ""
-    if isinstance(playlist_row, dict):
-        media_type_value = str(playlist_row.get("media_type") or "").lower()
+        record.update(
+            title="" if raw_title is None else raw_title,
+            media_type=MediaType.UNKNOWN if raw_media_type is None else raw_media_type,
+            duration=0.0 if raw_duration is None else raw_duration,
+            metadata={} if raw_metadata is None else raw_metadata,
+        )
 
     try:
-        media_type = MediaType(media_type_value) if media_type_value else MediaType.UNKNOWN
-    except ValueError:
-        media_type = MediaType.UNKNOWN
-
-    return MediaFile(
-        path=path,
-        title=(
-            playlist_row.get("title")
-            if isinstance(playlist_row, dict) and playlist_row.get("title")
-            else Path(path).stem
-        ),
-        media_type=media_type,
-        duration=(
-            float(playlist_row.get("duration") or 0.0)
-            if isinstance(playlist_row, dict)
-            else 0.0
-        ),
-        metadata=metadata,
-    )
+        return MediaFile.from_mapping(record)
+    except MediaFileValidationError as error:
+        logger.warning("Invalid playlist media row for %s: %s", path, error)
+        return None
 
 
-_PLAYLIST_CONTROLLER_TRACKS_METHODS: tuple[tuple[str, Any], ...] = (
+_PLAYLIST_CONTROLLER_TRACKS_METHODS: tuple[tuple[str, Callable[..., object]], ...] = (
     ("add_files_to_current_playlist", add_files_to_current_playlist),
     ("_ensure_media_in_library", _ensure_media_in_library),
     ("_add_media_to_playlist", _add_media_to_playlist),

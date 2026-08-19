@@ -23,6 +23,7 @@ def test_app_info_uses_current_stack_metadata():
 
     assert general.get("app_name") == "WaveHelm"
     assert general.get("organization_name") == "WaveHelm"
+    assert general.get("version") == "1.0.1"
     assert general.get("target_platform") == "Windows"
     assert general.get("license") == "GNU GPL v3.0 or later (with Section 7 additional terms)"
     assert general.get("website_url") == "https://1981-teck.github.io/WaveHelm/"

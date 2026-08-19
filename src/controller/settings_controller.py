@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from src.audio.audio_event_bus import AudioEventBus
     from src.audio.audio_engine import AudioEngine
     from src.model.localization_manager import LocalizationManager
-    from src.model.setting_manager import SettingsManager
+    from src.model.setting_manager import JsonValue, SettingsManager
     from src.model.theme_manager import ThemeManager
 
 from src.audio.audio_events import AudioEventType
@@ -56,6 +56,7 @@ RUNTIME_EXCEPTIONS = (
 )
 CLEANUP_EXCEPTIONS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
 LOG_HANDLER_EXCEPTIONS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
+MAX_SETTINGS_IMPORT_BYTES = 1_048_576
 
 
 class SettingsController:
@@ -208,12 +209,12 @@ class SettingsController:
         except RUNTIME_EXCEPTIONS as error:
             logger.debug("Video runtime update skipped: %s", error, exc_info=True)
 
-    def set_setting(self, key: str, value: Any) -> None:
+    def set_setting(self, key: str, value: "JsonValue") -> None:
         try:
-            self.settings_manager.set_setting(key, value)
+            persisted_value = self.settings_manager.set_setting(key, value)
             self._publish_event(
                 AudioEventType.SETTINGS_UPDATED,
-                {"key": key, "value": value},
+                {"key": key, "value": persisted_value},
             )
             self._notify_feedback("setting_updated", name=key)
         except SETTINGS_MANAGER_EXCEPTIONS as error:
@@ -225,8 +226,9 @@ class SettingsController:
     def export_settings(self, file_path: str) -> None:
         try:
             path = Path(file_path)
+            exportable = self.settings_manager.get_exportable_settings()
             path.write_text(
-                json.dumps(self.get_all_settings(), indent=4, ensure_ascii=False),
+                json.dumps(exportable, indent=4, ensure_ascii=False, allow_nan=False),
                 encoding="utf-8",
             )
             self._notify_feedback("settings_exported", path=file_path)
@@ -234,25 +236,37 @@ class SettingsController:
             self._handle_error(error, "error_exporting_settings")
         except JSON_EXCEPTIONS as error:
             self._handle_error(error, "error_exporting_settings")
+        except SETTINGS_MANAGER_EXCEPTIONS as error:
+            self._handle_error(error, "error_exporting_settings")
 
     def import_settings(self, file_path: str) -> None:
         if not self._unsubscribe_event(AudioEventType.SETTINGS_UPDATED, self._on_settings_updated):
             logger.debug("Unable to unsubscribe SETTINGS_UPDATED during import")
 
         try:
-            with Path(file_path).open("r", encoding="utf-8") as handle:
+            path = Path(file_path)
+            if path.stat().st_size > MAX_SETTINGS_IMPORT_BYTES:
+                raise ValueError("settings import exceeds the 1 MiB limit")
+            with path.open("r", encoding="utf-8") as handle:
                 settings = json.load(handle)
             if not isinstance(settings, dict):
                 raise ValueError("settings import must be a JSON object")
 
-            for key, value in settings.items():
-                self.settings_manager.set_setting(key, value)
-
+            result = self.settings_manager.apply_imported_settings(settings)
             self._load_initial_settings()
             self._publish_event(
                 AudioEventType.SETTINGS_BATCH_UPDATED,
-                {"updated_keys": list(settings.keys()), "source": "import"},
+                {
+                    "updated_keys": list(result.updated_keys),
+                    "ignored_keys": list(result.ignored_keys),
+                    "source": "import",
+                },
             )
+            if result.ignored_keys:
+                logger.info(
+                    "Ignored protected settings during import: %s",
+                    ", ".join(result.ignored_keys),
+                )
             self._notify_feedback("settings_imported", path=file_path)
         except FILE_EXCEPTIONS as error:
             self._handle_error(error, "error_importing_settings")

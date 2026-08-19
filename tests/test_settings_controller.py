@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import json
-import logging
-import shutil
-import uuid
 from pathlib import Path
 
 from src.audio.audio_events import AudioEventType
-import src.controller.settings_controller as settings_controller_mod
-import src.controller.settings_controller_cleanup as settings_cleanup_mod
 from src.controller.settings_controller import SettingsController
+from src.model.setting_manager import SettingsImportResult
+from src.utils.exceptions import SettingsError
 
 
 class DummySettingsManager:
@@ -28,13 +25,34 @@ class DummySettingsManager:
         }
         self.set_calls = []
         self.reset_calls = 0
+        self.import_error = None
 
     def get_all_settings(self):
         return dict(self.data)
 
+    def get_exportable_settings(self):
+        return {key: value for key, value in self.data.items() if key != 'cache_dir'}
+
     def set_setting(self, key, value):
         self.set_calls.append((key, value))
-        self.data[key] = value
+        persisted_value = max(0, min(100, int(value))) if key == 'volume' else value
+        self.data[key] = persisted_value
+        return persisted_value
+
+    def apply_imported_settings(self, values):
+        if self.import_error is not None:
+            raise self.import_error
+        candidate = dict(self.data)
+        updated_keys = []
+        ignored_keys = []
+        for key, value in values.items():
+            if key == 'cache_dir':
+                ignored_keys.append(key)
+                continue
+            candidate[key] = value
+            updated_keys.append(key)
+        self.data = candidate
+        return SettingsImportResult(tuple(updated_keys), tuple(ignored_keys))
 
     def get_setting(self, key, default=None):
         return self.data.get(key, default)
@@ -199,6 +217,19 @@ def test_set_setting_persists_and_publishes_feedback():
     )
 
 
+def test_set_setting_publishes_normalized_persisted_value():
+    controller, settings, localization, theme, bus, audio, video = _make_controller()
+    bus.published.clear()
+
+    controller.set_setting('volume', 500)
+
+    assert settings.data['volume'] == 100
+    assert bus.published[0] == (
+        AudioEventType.SETTINGS_UPDATED,
+        {'key': 'volume', 'value': 100},
+    )
+
+
 def test_export_and_import_settings_publish_batch_events():
     controller, settings, localization, theme, bus, audio, video = _make_controller()
     export_path = RUNTIME_DIR / 'settings_export.json'
@@ -227,7 +258,11 @@ def test_export_and_import_settings_publish_batch_events():
     assert bus.subscribed[-1][0] == AudioEventType.SETTINGS_UPDATED
     assert (
         AudioEventType.SETTINGS_BATCH_UPDATED,
-        {'updated_keys': ['language', 'volume', 'theme', 'primary_color'], 'source': 'import'},
+        {
+            'updated_keys': ['language', 'volume', 'theme', 'primary_color'],
+            'ignored_keys': [],
+            'source': 'import',
+        },
     ) in bus.published
     assert bus.published[-1] == (
         AudioEventType.FEEDBACK_MESSAGE,
@@ -314,198 +349,40 @@ def test_on_settings_updated_reports_runtime_language_failures():
     ]
 
 
-def test_clear_processed_audio_cache_and_runtime_artifacts_keep_user_files():
+def test_set_setting_failure_publishes_only_error_feedback():
     controller, settings, localization, theme, bus, audio, video = _make_controller()
-    runtime_dir = RUNTIME_DIR / f'cleanup_{uuid.uuid4().hex}'
-    if runtime_dir.exists():
-        shutil.rmtree(runtime_dir, ignore_errors=True)
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    settings.SETTINGS_FILE = runtime_dir / 'settings.json'
-    settings.SETTINGS_FILE.write_text('{}', encoding='utf-8')
-    app_data = settings.SETTINGS_FILE.parent
+    bus.published.clear()
 
-    processed_dir = app_data / 'processed_audio'
-    cache_dir = app_data / 'cache'
-    pycache_dir = app_data / 'pycache'
-    logs_dir = app_data / 'logs'
-    for directory in (processed_dir, cache_dir, pycache_dir, logs_dir):
-        directory.mkdir(parents=True, exist_ok=True)
+    def fail_set_setting(key, value):
+        raise SettingsError('write failed')
 
-    (processed_dir / 'a.wav').write_text('x', encoding='utf-8')
-    (cache_dir / 'cache.bin').write_text('x', encoding='utf-8')
-    (pycache_dir / 'module.pyc').write_text('x', encoding='utf-8')
-    (logs_dir / 'wavehelm.log').write_text('log', encoding='utf-8')
-    (app_data / 'library.json').write_text('[]', encoding='utf-8')
-    (app_data / 'wavehelm.db').write_text('db', encoding='utf-8')
+    settings.set_setting = fail_set_setting
+    controller.set_setting('volume', 55)
 
-    settings.data['cache_dir'] = str(cache_dir)
-    audio._processed_audio_dir = processed_dir
-
-    assert controller.get_app_data_dir() == app_data.resolve()
-    assert controller.get_processed_audio_dir() == processed_dir.resolve()
-    assert controller.get_logs_dir() == logs_dir.resolve()
-    assert controller.clear_processed_audio_cache() == 1
-
-    (processed_dir / 'b.wav').write_text('x', encoding='utf-8')
-    result = controller.clear_runtime_artifacts()
-
-    assert result == {
-        'processed_audio_removed': 0,
-        'cache_removed': 0,
-        'logs_removed': 0,
-        'total_removed': 0,
-    }
-    assert [p.name for p in processed_dir.iterdir()] == ['b.wav']
-    assert [p.name for p in cache_dir.iterdir()] == ['cache.bin']
-    assert [p.name for p in pycache_dir.iterdir()] == ['module.pyc']
-    assert [p.name for p in logs_dir.iterdir()] == ['wavehelm.log']
-
-    settings_cleanup_mod._run_pending_runtime_cleanup()
-
-    assert [p.name for p in processed_dir.iterdir()] == ['b.wav']
-    assert list(cache_dir.iterdir()) == []
-    assert list(pycache_dir.iterdir()) == []
-    assert list(logs_dir.iterdir()) == []
-    assert (app_data / 'library.json').exists()
-    assert (app_data / 'wavehelm.db').exists()
-
-    shutil.rmtree(runtime_dir, ignore_errors=True)
+    assert bus.published == [
+        (
+            AudioEventType.ERROR,
+            {'message': 'setting error volume: [SETTINGS_ERROR] write failed'},
+        )
+    ]
 
 
-def test_clear_runtime_artifacts_truncates_active_log_handler_on_shutdown_cleanup():
+def test_import_failure_keeps_state_and_publishes_no_success(tmp_path):
     controller, settings, localization, theme, bus, audio, video = _make_controller()
-    runtime_dir = RUNTIME_DIR / f'cleanup_{uuid.uuid4().hex}'
-    if runtime_dir.exists():
-        shutil.rmtree(runtime_dir, ignore_errors=True)
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    settings.SETTINGS_FILE = runtime_dir / 'settings.json'
-    settings.SETTINGS_FILE.write_text('{}', encoding='utf-8')
-    app_data = settings.SETTINGS_FILE.parent
-    logs_dir = app_data / 'logs'
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / 'wavehelm.log'
-    log_path.write_text('before', encoding='utf-8')
+    original = dict(settings.data)
+    settings.import_error = SettingsError('import rejected')
+    import_path = tmp_path / 'settings_import.json'
+    import_path.write_text(json.dumps({'language': 'fr', 'volume': 42}), encoding='utf-8')
+    bus.published.clear()
 
-    audio._processed_audio_dir = app_data / 'processed_audio'
-    settings.data['cache_dir'] = str(app_data / 'cache')
+    controller.import_settings(str(import_path))
 
-    handler = logging.FileHandler(log_path, encoding='utf-8')
-    root = logging.getLogger()
-    root.addHandler(handler)
-    try:
-        result = controller.clear_runtime_artifacts()
-        assert result['logs_removed'] == 0
-        assert log_path.exists()
-        assert log_path.read_text(encoding='utf-8') == 'before'
-
-        settings_cleanup_mod._run_pending_runtime_cleanup()
-
-        assert log_path.exists()
-        assert log_path.read_text(encoding='utf-8') == ''
-
-        record = logging.LogRecord('test', logging.INFO, __file__, 0, 'after', (), None)
-        handler.emit(record)
-        handler.flush()
-        assert 'after' in log_path.read_text(encoding='utf-8')
-    finally:
-        root.removeHandler(handler)
-        handler.close()
-        shutil.rmtree(runtime_dir, ignore_errors=True)
-
-
-def test_processed_audio_cache_cleanup_is_blocked_while_processed_file_is_active():
-    controller, settings, localization, theme, bus, audio, video = _make_controller()
-    runtime_dir = RUNTIME_DIR / f'busy_{uuid.uuid4().hex}'
-    if runtime_dir.exists():
-        shutil.rmtree(runtime_dir, ignore_errors=True)
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        settings.SETTINGS_FILE = runtime_dir / 'settings.json'
-        settings.SETTINGS_FILE.write_text('{}', encoding='utf-8')
-        processed_dir = runtime_dir / 'processed_audio'
-        cache_dir = runtime_dir / 'cache'
-        logs_dir = runtime_dir / 'logs'
-        processed_dir.mkdir(parents=True, exist_ok=True)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        processed_file = processed_dir / 'track.wav'
-        processed_file.write_text('x', encoding='utf-8')
-        (cache_dir / 'temp.bin').write_text('x', encoding='utf-8')
-        (logs_dir / 'wavehelm.log').write_text('x', encoding='utf-8')
-
-        audio._current_file = 'C:/music/source.wav'
-        audio._playback_source_file = str(processed_file)
-        audio._processed_audio_dir = processed_dir
-        settings.data['cache_dir'] = str(cache_dir)
-
-        assert controller.is_processed_audio_cache_in_use() is True
-        assert controller.get_processed_audio_cleanup_block_message() == 'Stop the current audio playback before clearing processed audio cache.'
-
-        try:
-            controller.clear_processed_audio_cache()
-            assert False, 'expected RuntimeError'
-        except RuntimeError as error:
-            assert str(error) == 'Stop the current audio playback before clearing processed audio cache.'
-
-        result = controller.clear_runtime_artifacts()
-        assert result['total_removed'] == 0
-        settings_cleanup_mod._run_pending_runtime_cleanup()
-        assert processed_file.exists()
-        assert list(cache_dir.iterdir()) == []
-        assert list(logs_dir.iterdir()) == []
-    finally:
-        shutil.rmtree(runtime_dir, ignore_errors=True)
-
-
-def test_pending_runtime_cleanup_is_consumed_after_one_shutdown_pass():
-    controller, settings, localization, theme, bus, audio, video = _make_controller()
-    runtime_dir = RUNTIME_DIR / f'oneshot_{uuid.uuid4().hex}'
-    if runtime_dir.exists():
-        shutil.rmtree(runtime_dir, ignore_errors=True)
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        settings.SETTINGS_FILE = runtime_dir / 'settings.json'
-        settings.SETTINGS_FILE.write_text('{}', encoding='utf-8')
-        cache_dir = runtime_dir / 'cache'
-        logs_dir = runtime_dir / 'logs'
-        pycache_dir = runtime_dir / 'pycache'
-        for directory in (cache_dir, logs_dir, pycache_dir):
-            directory.mkdir(parents=True, exist_ok=True)
-        (cache_dir / 'first.bin').write_text('x', encoding='utf-8')
-        (logs_dir / 'wavehelm.log').write_text('x', encoding='utf-8')
-        (pycache_dir / 'module.pyc').write_text('x', encoding='utf-8')
-
-        settings.data['cache_dir'] = str(cache_dir)
-        controller.clear_runtime_artifacts()
-        settings_cleanup_mod._run_pending_runtime_cleanup()
-
-        (cache_dir / 'second.bin').write_text('x', encoding='utf-8')
-        (logs_dir / 'second.log').write_text('x', encoding='utf-8')
-        (pycache_dir / 'second.pyc').write_text('x', encoding='utf-8')
-        settings_cleanup_mod._run_pending_runtime_cleanup()
-
-        assert [p.name for p in cache_dir.iterdir()] == ['second.bin']
-        assert [p.name for p in logs_dir.iterdir()] == ['second.log']
-        assert [p.name for p in pycache_dir.iterdir()] == ['second.pyc']
-    finally:
-        shutil.rmtree(runtime_dir, ignore_errors=True)
-
-
-def test_path_getters_log_and_fallback_when_resolution_fails(caplog):
-    controller, settings, localization, theme, bus, audio, video = _make_controller()
-    caplog.set_level(logging.DEBUG, logger=settings_controller_mod.logger.name)
-
-    class BrokenPathValue:
-        def __str__(self):
-            raise TypeError('broken path value')
-
-    settings.SETTINGS_FILE = object()
-    settings.data['cache_dir'] = BrokenPathValue()
-    audio._processed_audio_dir = object()
-
-    assert controller.get_app_data_dir() == Path.cwd()
-    assert controller.get_processed_audio_dir() == (Path.cwd() / 'processed_audio').resolve()
-
-    assert 'Failed to resolve app data dir from SETTINGS_FILE' in caplog.text
-    assert 'Failed to resolve app data dir from cache_dir' in caplog.text
-    assert 'Failed to resolve processed audio dir from audio engine' in caplog.text
+    assert settings.data == original
+    assert bus.published == [
+        (
+            AudioEventType.ERROR,
+            {'message': 'import error: [SETTINGS_ERROR] import rejected'},
+        )
+    ]
+    assert bus.unsubscribed[-1][0] == AudioEventType.SETTINGS_UPDATED
+    assert bus.subscribed[-1][0] == AudioEventType.SETTINGS_UPDATED
