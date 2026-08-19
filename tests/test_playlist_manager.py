@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -119,3 +120,30 @@ def test_get_playlist_items_recovers_invalid_metadata_json(monkeypatch):
     assert items[0]['metadata'] == {}
 
     core.close()
+
+
+def test_playlist_mutations_run_on_full_synchronous_connections(monkeypatch):
+    manager, core = _make_manager(monkeypatch, 'durable_mutations')
+    observed_modes: list[int] = []
+    real_durable_connection = core.durable_write_connection
+
+    @contextmanager
+    def tracked_durable_connection():
+        with real_durable_connection() as connection:
+            observed_modes.append(
+                int(connection.execute("PRAGMA synchronous").fetchone()[0])
+            )
+            yield connection
+
+    monkeypatch.setattr(core, 'durable_write_connection', tracked_durable_connection)
+
+    playlist_id = manager.create_playlist('Durable')
+    manager.add_playlist_item(playlist_id, 'track.wav')
+    manager.reorder_playlist_item(playlist_id, 'track.wav', 0)
+    manager.remove_playlist_item(playlist_id, 'track.wav')
+    manager.rename_playlist(playlist_id, 'Durable Renamed')
+    manager.delete_playlist(playlist_id)
+
+    assert observed_modes == [2, 2, 2, 2, 2, 2]
+    assert core.conn is not None
+    assert int(core.conn.execute("PRAGMA synchronous").fetchone()[0]) == 1

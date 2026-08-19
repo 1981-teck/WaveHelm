@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
 import sqlite3
 import logging
 import threading
@@ -32,7 +35,7 @@ class DbCore:
     ):
         if hasattr(self, "_initialized") and self._initialized:
             return
-        
+
         self.localization_manager = (
             localization_manager if localization_manager else LocalizationManager()
         )
@@ -58,34 +61,94 @@ class DbCore:
                 return
 
             try:
-                self.conn = sqlite3.connect(
-                    self.db_path, check_same_thread=False, timeout=5.0
-                )
-                self.conn.row_factory = sqlite3.Row
-                self.conn.execute("PRAGMA foreign_keys = ON")
-                self._configure_connection()
+                self.conn = self._open_connection(synchronous="NORMAL")
                 logger.info(f"Connected to database: {self.db_path}")
             except sqlite3.Error as e:
                 error_msg = f"Database connection error: {e}"
                 logger.critical(f"[DbCore] {error_msg}", exc_info=True)
                 raise DatabaseError(error_msg) from e
 
+    @staticmethod
+    def _apply_connection_pragmas(
+        connection: sqlite3.Connection, *, synchronous: str
+    ) -> None:
+        if synchronous not in {"NORMAL", "FULL"}:
+            raise ValueError(f"Unsupported SQLite synchronous mode: {synchronous}")
+        cur = connection.cursor()
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute(f"PRAGMA synchronous={synchronous};")
+        cur.execute("PRAGMA busy_timeout=5000;")
+        cur.execute("PRAGMA foreign_keys=ON;")
+        cur.execute("PRAGMA temp_store=MEMORY;")
+        try:
+            cur.execute("PRAGMA mmap_size=268435456;")
+        except DB_CONFIG_EXCEPTIONS as error:
+            logger.debug("SQLite mmap_size PRAGMA skipped: %s", error, exc_info=True)
+
+    def _open_connection(self, *, synchronous: str) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            self.db_path, check_same_thread=False, timeout=5.0
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            self._apply_connection_pragmas(connection, synchronous=synchronous)
+            return connection
+        except (sqlite3.Error, TypeError, ValueError):
+            connection.close()
+            raise
+
     def _configure_connection(self) -> None:
         if not self.conn:
             return
         try:
-            cur = self.conn.cursor()
-            cur.execute("PRAGMA journal_mode=WAL;")
-            cur.execute("PRAGMA synchronous=NORMAL;")
-            cur.execute("PRAGMA busy_timeout=5000;")
-            cur.execute("PRAGMA foreign_keys=ON;")
-            cur.execute("PRAGMA temp_store=MEMORY;")
+            self._apply_connection_pragmas(self.conn, synchronous="NORMAL")
+        except DB_CONFIG_EXCEPTIONS as error:
+            logger.warning("SQLite PRAGMA configuration skipped: %s", error)
+
+    @contextmanager
+    def durable_write_connection(self) -> Iterator[sqlite3.Connection]:
+        """Yield an isolated WAL connection with FULL commit durability.
+
+        The shared application connection remains on NORMAL so bulk/non-critical
+        writes do not pay an fsync on every commit. Playlist canonical mutations
+        use this isolated connection because the matching mirror intent must
+        survive an OS crash or power loss once commit returns.
+        """
+        with self._db_lock:
             try:
-                cur.execute("PRAGMA mmap_size=268435456;")
-            except DB_CONFIG_EXCEPTIONS as error:
-                logger.debug("SQLite mmap_size PRAGMA skipped: %s", error, exc_info=True)
-        except DB_CONFIG_EXCEPTIONS as e:
-            logger.warning("SQLite PRAGMA configuration skipped: %s", e)
+                connection = self._open_connection(synchronous="FULL")
+            except sqlite3.Error as error:
+                raise DatabaseError(
+                    f"Unable to open durable SQLite connection: {error}"
+                ) from error
+            try:
+                journal_mode = str(
+                    connection.execute("PRAGMA journal_mode;").fetchone()[0]
+                ).lower()
+                synchronous = int(
+                    connection.execute("PRAGMA synchronous;").fetchone()[0]
+                )
+                if journal_mode != "wal" or synchronous != 2:
+                    raise DatabaseError(
+                        "Durable SQLite connection could not enable WAL/FULL mode."
+                    )
+                yield connection
+            finally:
+                if connection.in_transaction:
+                    try:
+                        connection.rollback()
+                    except sqlite3.Error as error:
+                        logger.error(
+                            "Durable SQLite rollback failed: %s", error, exc_info=True
+                        )
+                try:
+                    connection.close()
+                except sqlite3.Error as error:
+                    logger.error(
+                        "Durable SQLite connection close failed: %s",
+                        error,
+                        exc_info=True,
+                    )
 
     def close(self):
         with self._db_lock:

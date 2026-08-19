@@ -27,16 +27,6 @@ PLAYLIST_MANAGER_DB_EXCEPTIONS = (
 )
 
 
-def _require_connection(db_core: DbCore) -> sqlite3.Connection:
-    connection = db_core.conn
-    if connection is None:
-        db_core.connect()
-        connection = db_core.conn
-    if connection is None:
-        raise DatabaseError("Database not connected.")
-    return connection
-
-
 def _rollback_if_active(connection: sqlite3.Connection) -> None:
     if connection.in_transaction:
         connection.rollback()
@@ -85,8 +75,7 @@ class PlaylistManager:
         if not normalized_name:
             raise ValueError("Playlist name required")
 
-        with self.db_core._db_lock:
-            connection = _require_connection(self.db_core)
+        with self.db_core.durable_write_connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 existing = _playlist_identity(connection, playlist_id)
@@ -121,8 +110,7 @@ class PlaylistManager:
 
     def delete_playlist(self, playlist_id: int) -> None:
         """Delete canonical playlist data and enqueue mirror deletion atomically."""
-        with self.db_core._db_lock:
-            connection = _require_connection(self.db_core)
+        with self.db_core.durable_write_connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 existing = _playlist_identity(connection, playlist_id)
@@ -159,8 +147,7 @@ class PlaylistManager:
             raise ValueError("Playlist name required")
         timestamp = datetime.now().isoformat()
 
-        with self.db_core._db_lock:
-            connection = _require_connection(self.db_core)
+        with self.db_core.durable_write_connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 cursor = connection.execute(
@@ -219,8 +206,7 @@ class PlaylistManager:
         if not normalized_path:
             raise ValueError("Media path required")
 
-        with self.db_core._db_lock:
-            connection = _require_connection(self.db_core)
+        with self.db_core.durable_write_connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 playlist = _playlist_identity(connection, playlist_id)
@@ -295,8 +281,7 @@ class PlaylistManager:
         if not normalized_path:
             raise ValueError("Media path required")
 
-        with self.db_core._db_lock:
-            connection = _require_connection(self.db_core)
+        with self.db_core.durable_write_connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 playlist = _playlist_identity(connection, playlist_id)
@@ -364,8 +349,7 @@ class PlaylistManager:
         self, playlist_id: int, media_path: str, new_position: int
     ) -> None:
         """Reorder an item and enqueue the resulting mirror snapshot atomically."""
-        with self.db_core._db_lock:
-            connection = _require_connection(self.db_core)
+        with self.db_core.durable_write_connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 playlist = _playlist_identity(connection, playlist_id)

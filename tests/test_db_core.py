@@ -102,3 +102,46 @@ def test_configure_connection_logs_when_mmap_pragma_is_unavailable(caplog):
     DbCore._configure_connection(core)
 
     assert 'SQLite mmap_size PRAGMA skipped' in caplog.text
+
+
+def test_durable_write_connection_uses_wal_full_without_changing_shared_mode(
+    monkeypatch,
+):
+    runtime_dir = _runtime_dir('durable_connection')
+    monkeypatch.setattr(db_core_module, 'get_user_data_dir', lambda: runtime_dir)
+    core = DbCore(db_path='unit.db', localization_manager=DummyLocalization())
+    assert core.conn is not None
+    assert int(core.conn.execute("PRAGMA synchronous").fetchone()[0]) == 1
+
+    with core.durable_write_connection() as durable:
+        assert durable is not core.conn
+        assert str(durable.execute("PRAGMA journal_mode").fetchone()[0]).lower() == 'wal'
+        assert int(durable.execute("PRAGMA synchronous").fetchone()[0]) == 2
+        durable.execute("BEGIN IMMEDIATE")
+        durable.execute(
+            "INSERT INTO playlists (name, description, cover_art, creation_date, last_modified) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ('Uncommitted', None, None, '2024-01-01', '2024-01-01'),
+        )
+
+    assert int(core.conn.execute("PRAGMA synchronous").fetchone()[0]) == 1
+    row = core.conn.execute(
+        "SELECT COUNT(*) FROM playlists WHERE name = 'Uncommitted'"
+    ).fetchone()
+    assert int(row[0]) == 0
+
+
+def test_durable_write_connection_rejects_unverified_safety_mode(monkeypatch):
+    runtime_dir = _runtime_dir('durable_reject')
+    monkeypatch.setattr(db_core_module, 'get_user_data_dir', lambda: runtime_dir)
+    core = DbCore(db_path='unit.db', localization_manager=DummyLocalization())
+    real_open = core._open_connection
+
+    def open_normal_instead(*, synchronous: str):
+        assert synchronous == 'FULL'
+        return real_open(synchronous='NORMAL')
+
+    monkeypatch.setattr(core, '_open_connection', open_normal_instead)
+    with pytest.raises(db_core_module.DatabaseError, match='WAL/FULL'):
+        with core.durable_write_connection():
+            pass
