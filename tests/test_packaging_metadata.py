@@ -116,7 +116,11 @@ def test_development_tooling_and_ci_are_pinned_and_release_aware():
     assert "python -m pytest -q tests" in workflow
     assert "python -m build" in workflow
     assert "python -m pip_audit" in workflow
-    assert "cyclonedx-py requirements" in workflow
+    assert "--path $sitePackages" in workflow
+    assert "python -m venv --without-pip .wavehelm-runtime-audit" in workflow
+    assert "cyclonedx-py environment .wavehelm-runtime-audit" in workflow
+    assert "runtime-freeze.txt" in workflow
+    assert "cyclonedx-py requirements" not in workflow
 
 
 def test_release_ignore_policy_preserves_legal_sources_and_excludes_test_outputs():

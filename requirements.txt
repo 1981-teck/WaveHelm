@@ -5,7 +5,7 @@ numpy==2.4.4
 scipy==1.17.0
 soundfile==0.13.1
 tinytag==2.2.1
-Pillow==12.2.0
+Pillow==12.3.0
 opencv-python==4.13.0.92
 matplotlib==3.10.8
 

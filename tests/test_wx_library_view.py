@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 
@@ -241,10 +242,11 @@ def test_wx_library_view_dispatches_play_favorites_and_remove(monkeypatch):
     assert player.playback_contexts[0].autoplay is True
 
     view._on_add_to_favorites()
-    assert '/tmp/bravo.mp4' in library.favorite_paths
+    bravo_path = os.path.normpath('/tmp/bravo.mp4')
+    assert bravo_path in library.favorite_paths
 
     view._on_remove_selected()
-    assert library.remove_calls == ['/tmp/bravo.mp4']
+    assert library.remove_calls == [bravo_path]
     assert view.table.GetItemCount() == 1
     assert event_bus.published[-1] == (
         AudioEventType.FEEDBACK_MESSAGE,
@@ -278,11 +280,12 @@ def test_wx_library_view_imports_from_dialogs_and_updates_rows(monkeypatch):
 def test_wx_library_view_reacts_to_external_events(monkeypatch):
     view, library, _player, event_bus, _settings = build_library_view(monkeypatch)
 
-    library.media.append(MediaFile('/tmp/delta.mp3', title='Delta', media_type=MediaType.AUDIO, duration=45.0))
+    delta = MediaFile('/tmp/delta.mp3', title='Delta', media_type=MediaType.AUDIO, duration=45.0)
+    library.media.append(delta)
     event_bus.publish(AudioEventType.LIBRARY_UPDATED, {'count': 3})
     assert view.table.GetItemCount() == 3
 
-    event_bus.publish(AudioEventType.MEDIA_DURATION_UPDATE, {'path': '/tmp/delta.mp3', 'duration': 125.0})
+    event_bus.publish(AudioEventType.MEDIA_DURATION_UPDATE, {'path': delta.path, 'duration': 125.0})
     assert view.table.GetItemText(2, 3) == '02:05'
 
     event_bus.publish(AudioEventType.PLAYER_STATE_CHANGED, {'current_track': {'title': 'Delta'}})

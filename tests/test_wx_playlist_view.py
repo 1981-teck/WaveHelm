@@ -200,8 +200,6 @@ class DummyPlaylistController:
         self.event_bus.publish(AudioEventType.PLAYLIST_UPDATED, {'id': playlist_id})
         return removed
 
-
-
 def build_playlist_view(monkeypatch, settings_manager=None):
     monkeypatch.setitem(sys.modules, 'wx', FakeWxModule)
     FakeWxModule.next_message_box_result = FakeWxModule.YES
@@ -226,7 +224,6 @@ def build_playlist_view(monkeypatch, settings_manager=None):
         settings_manager=settings_manager,
     )
     return view, playlist_controller, player_controller, event_bus, settings_manager
-
 
 
 def test_wx_playlist_view_populates_tables_and_labels(monkeypatch):
@@ -265,10 +262,11 @@ def test_wx_playlist_view_create_delete_add_remove_and_play(monkeypatch):
     assert player_controller.playback_contexts[-1].start_index == 1
     assert player_controller.playback_contexts[-1].autoplay is True
 
+    expected_removed_paths = [item.path for item in playlist_controller.tracks[1][:2]]
     view.track_table.Select(0, True)
     view.track_table.Select(1, True)
     view._on_remove_tracks()
-    assert playlist_controller.removed_batches[-1] == (1, ['/tmp/a.mp3', '/tmp/b.mp3'])
+    assert playlist_controller.removed_batches[-1] == (1, expected_removed_paths)
     assert event_bus.published[-1][0] == AudioEventType.FEEDBACK_MESSAGE
 
     view.playlist_table.Select(0, False)

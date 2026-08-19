@@ -110,7 +110,7 @@ jobs:
 
   supply-chain:
     name: Dependency audit and SBOM
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -120,25 +120,57 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
       - name: Install release audit tooling
-        run: python -m pip install pip-audit==2.10.1 cyclonedx-bom==7.3.1
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit==2.10.1 cyclonedx-bom==7.3.1
 
-      - name: Audit pinned direct dependencies
+      - name: Create isolated Windows runtime environment
+        shell: pwsh
+        run: |
+          python -m venv --without-pip .wavehelm-runtime-audit
+          python -m pip --python .wavehelm-runtime-audit install -r requirements.txt
+          python -m pip --python .wavehelm-runtime-audit check
+          python -m pip --python .wavehelm-runtime-audit freeze --all | Out-File -Encoding utf8 runtime-freeze.txt
+
+      - name: Audit installed runtime dependency graph
         id: dependency-audit
         continue-on-error: true
-        run: python -m pip_audit --no-deps -r requirements.txt --format json --output pip-audit.json
+        shell: pwsh
+        run: |
+          $sitePackages = Join-Path $PWD '.wavehelm-runtime-audit\Lib\site-packages'
+          python -m pip_audit --path $sitePackages --format json --output pip-audit.json
 
-      - name: Generate reproducible CycloneDX SBOM
-        run: >-
-          cyclonedx-py requirements requirements.txt
-          --output-reproducible
-          --pyproject pyproject.toml
-          --mc-type application
-          --sv 1.6
-          --of JSON
-          -o sbom.cdx.json
+      - name: Generate reproducible transitive CycloneDX SBOM
+        shell: pwsh
+        run: |
+          cyclonedx-py environment .wavehelm-runtime-audit `
+            --output-reproducible `
+            --pyproject pyproject.toml `
+            --mc-type application `
+            --sv 1.6 `
+            --of JSON `
+            -o sbom.cdx.json
+
+      - name: Verify SBOM contains runtime transitive dependencies
+        shell: pwsh
+        run: |
+          @'
+          import json
+          from pathlib import Path
+
+          bom = json.loads(Path("sbom.cdx.json").read_text(encoding="utf-8"))
+          names = {str(component.get("name", "")).lower() for component in bom.get("components", [])}
+          required = {"pillow", "pywin32", "comtypes", "cffi", "contourpy", "fonttools", "python-dateutil"}
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit("SBOM missing expected Windows runtime/transitive components: " + ", ".join(missing))
+          '@ | python -
 
       - name: Upload supply-chain evidence
         if: always()
@@ -147,6 +179,7 @@ jobs:
           name: wavehelm-supply-chain-evidence
           path: |
             pip-audit.json
+            runtime-freeze.txt
             sbom.cdx.json
           if-no-files-found: warn
 
