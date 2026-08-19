@@ -358,9 +358,14 @@ def get_user_data_dir(
         fallback_dir = resolved_home / f".{resolved_app_name.lower()}_data"
         try:
             fallback_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            # ultima spiaggia: home
-            return resolved_home
+        except OSError as fallback_error:
+            logger.critical(
+                "Impossibile creare anche la directory dati fallback in %s: %s",
+                fallback_dir,
+                fallback_error,
+                exc_info=True,
+            )
+            raise
         return fallback_dir
 
 
