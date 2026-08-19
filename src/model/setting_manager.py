@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from src.model.localization_manager import LocalizationManager
+from src.utils.durable_io import durable_replace, sync_parent_directory
 from src.utils.exceptions import SettingsError
 from src.utils.helpers import get_user_data_dir
 
@@ -190,7 +191,16 @@ class SettingsManager:
                 )
                 file_obj.flush()
                 os.fsync(file_obj.fileno())
-            os.replace(temporary_path, self.SETTINGS_FILE)
+            durable_replace(temporary_path, self.SETTINGS_FILE)
+            temporary_path = None
+            try:
+                sync_parent_directory(self.SETTINGS_FILE.parent)
+            except OSError as error:
+                logger.warning(
+                    "Settings file replaced but parent directory sync failed: %s",
+                    error,
+                    exc_info=True,
+                )
         except SERIALIZATION_EXCEPTIONS as error:
             self._remove_temporary_file(temporary_path)
             raise SettingsError(
