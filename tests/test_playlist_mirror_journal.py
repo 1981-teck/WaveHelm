@@ -315,7 +315,7 @@ def test_failed_recovery_records_backoff_and_never_reports_completion(
         def fail_replace(_source: object, _target: object) -> None:
             raise PermissionError("replace blocked")
 
-        patch.setattr(playlist_storage.os, "replace", fail_replace)
+        patch.setattr(playlist_storage, "_replace_file_durable", fail_replace)
         with pytest.raises(playlist_storage.PlaylistReconciliationError, match="failed"):
             controller._sync_all_playlist_files()
         first = manager.mirror_journal.get_job(playlist_id)
