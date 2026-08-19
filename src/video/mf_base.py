@@ -26,10 +26,10 @@ from typing import Iterable, List
 
 logger = logging.getLogger(__name__)
 
-# Intentional boundary: compatibility bridge modules may expose dynamic
-# attributes or proxies whose resolution can fail for environment-specific
-# reasons. Skip those exports and keep the bridge importable.
-MF_BASE_EXPORT_EXCEPTIONS = (Exception,)
+# Compatibility modules can legitimately expose a name that disappears at
+# resolution time (for example through a dynamic module attribute). Only that
+# absence is skipped; unexpected runtime failures must remain visible.
+MF_BASE_EXPORT_EXCEPTIONS = (AttributeError,)
 
 
 def _public_names_from_module(mod: ModuleType) -> List[str]:
