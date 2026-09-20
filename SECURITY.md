@@ -1,29 +1,65 @@
-# Security policy
+Security Policy
 
-## Supported source version
+Supported source version
 
-Security corrections are applied to the current source line, beginning with WaveHelm 1.0.1. Earlier source archives should be upgraded before reporting a suspected issue.
+Security corrections are applied to the current maintained source line, beginning with WaveHelm 1.0.1.
 
-## Reporting a vulnerability
+Earlier source archives should be upgraded before reporting a suspected issue whenever practical.
 
-Do not disclose a suspected vulnerability in a public issue before it has been assessed.
+Reporting a vulnerability
 
-Send a concise report to the support contact published in `src/config/app_info.json`. Include:
+Do not disclose suspected security vulnerabilities in a public Issue, Pull Request, Discussion, commit, workflow log, or social post.
 
-- affected version and commit or archive hash;
-- operating system and Python version;
-- affected file or component;
-- reproducible steps or a minimal proof of concept;
-- observed and expected behavior;
-- potential impact;
-- any temporary containment already applied.
+Use GitHub Private Vulnerability Reporting:
 
-Do not include real credentials, private keys, personal data, or destructive payloads. Use test data and isolated directories.
+https://github.com/1981-teck/WaveHelm/security/advisories/new
 
-## Assessment scope
+This creates a private report visible to the reporter and repository maintainers.
 
-Reports are evaluated against the maintained Windows source runtime. Environment-specific failures should identify the Windows version, Media Foundation availability, codec, device, and dependency versions when relevant.
+A useful report should include, where possible:
 
-## Coordinated disclosure
+affected WaveHelm version, commit, or archive hash;
 
-A confirmed issue should remain private until a correction and release note are available or a disclosure plan has been agreed. Public credit can be included when requested and appropriate.
+Windows version and Python version;
+
+affected file, component, or workflow;
+
+clear reproduction steps or a minimal proof of concept;
+
+observed and expected behavior;
+
+potential impact;
+
+any temporary containment or mitigation already tested.
+
+Do not include real credentials, private keys, personal data, destructive payloads, or unrelated confidential information. Use test data and isolated directories.
+
+If GitHub Private Vulnerability Reporting is temporarily unavailable, contact the maintainer without publishing vulnerability details and request a private coordination channel.
+
+Assessment scope
+
+Reports are evaluated against the maintained Windows source runtime.
+
+Environment-specific failures should identify relevant details such as:
+
+Windows version;
+
+Python version;
+
+Media Foundation availability;
+
+codecs;
+
+audio/video device;
+
+dependency versions;
+
+affected configuration.
+
+Coordinated disclosure
+
+A suspected vulnerability should remain private while it is being assessed.
+
+For a confirmed issue, disclosure should normally wait until a correction and release note are available, or until a disclosure plan has been agreed with the reporter.
+
+Public credit can be included when requested and appropriate.
