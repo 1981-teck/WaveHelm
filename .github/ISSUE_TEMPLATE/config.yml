@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: WaveHelm Discussions
+    url: https://github.com/1981-teck/WaveHelm/discussions
+    about: Ask questions, share feedback, or discuss open-ended ideas.
+  - name: Security issues
+    url: https://github.com/1981-teck/WaveHelm/security
+    about: Please do not disclose sensitive vulnerability details in a public issue.
