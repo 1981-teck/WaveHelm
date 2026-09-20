@@ -1,54 +1,75 @@
 # WaveHelm
 
-WaveHelm is a Windows desktop media player that combines local audio and video playback, DSP audio tools, ambient playback, playlists, favorites, and a real-time visualizer in a wxPython application shell.
+**Open-source Windows media player for local audio and video playback, DSP, ambient playback, playlists, favorites, and real-time visualization.**
 
-This repository is the public **source-first** edition of the project. The codebase is intended to show the product architecture, feature scope, and implementation direction of WaveHelm, while remaining usable for local source-based runs on Windows.
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/1981-teck/WaveHelm?display_name=tag&sort=semver)](https://github.com/1981-teck/WaveHelm/releases/latest)
+
+![WaveHelm Library](docs/screenshots/library.png)
+
+### Explore WaveHelm
+
+[**Project website**](https://1981-teck.github.io/WaveHelm/) ·
+[**Latest release**](https://github.com/1981-teck/WaveHelm/releases/latest) ·
+[**Run from source**](#install-and-run-from-source) ·
+[**Discussions**](https://github.com/1981-teck/WaveHelm/discussions) ·
+[**Roadmap**](ROADMAP.md)
+
+### What it includes
+
+- **Audio and video playback** for local media on Windows
+- **DSP tools** with equalizer, effects, and processed-audio workflows
+- **Ambient playback** independently mixed with the main session
+- **Playlists, favorites, search, filtering, and persistent library data**
+- **Real-time visualizer**, including a detached fullscreen-capable window
+- **Windows Media Foundation** video backend
+- Public source, tests, CI, documentation, dependency auditing, and release evidence
+
+WaveHelm is a **source-first Windows desktop application built with Python and wxPython**.
+
+The project is developed through **human-directed, AI-assisted software development**, with emphasis on iterative verification, regression testing, maintainability, and public technical review.
 
 ## Why this project exists
 
-WaveHelm was built to explore a practical question: how far a single product can be pushed by combining human product direction with AI-assisted implementation.
+WaveHelm started from a practical question:
 
-The project focuses on:
+> How far can a single builder take a real desktop application by combining human product direction with AI-assisted implementation and systematic verification?
 
-* a full desktop media-player workflow instead of a narrow demo
-* a maintained Windows runtime with Media Foundation video playback
-* integrated DSP tools such as equalizer and effects
-* a separate ambient playback layer for mixed listening sessions
-* repository hygiene, test coverage, and documentation strong enough for public review
+Rather than remaining a small demonstration, the project evolved into a complete media-player workflow with persistent data, Windows-native video integration, DSP processing, testing, CI, and release hardening.
 
 ## Project status
 
-* **Target platform:** Windows
-* **Maintained UI runtime:** wxPython
-* **Current source release:** 1.0.1
-* **Project maturity:** public GPL source release / active beta
-* **Repository model:** source-first public repository
-* **Planned convenience distribution:** possible future Microsoft Store release, handled separately from this repository baseline
+- **Target platform:** Windows
+- **Maintained UI runtime:** wxPython
+- **Latest public release:** [v1.0.1](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.1)
+- **Project maturity:** active beta / public GPL source release
+- **Repository model:** source-first
+- **Development:** active
+
+The next development cycle is focused primarily on reliability and hardening rather than adding superficial features.
 
 ## Public project website
 
-This repository now includes a GitHub Pages-ready public site in `docs/`.
+**https://1981-teck.github.io/WaveHelm/**
 
-Published public URLs:
+Additional resources:
 
-* **Home:** `https://1981-teck.github.io/WaveHelm/`
-* **Privacy policy:** `https://1981-teck.github.io/WaveHelm/privacy-policy.html`
-* **Applicable license terms:** `https://1981-teck.github.io/WaveHelm/license-terms.html`
-* **Source code and licenses:** `https://1981-teck.github.io/WaveHelm/source-code-and-licenses.html`
-* **Support:** `https://1981-teck.github.io/WaveHelm/support.html`
+- [Privacy policy](https://1981-teck.github.io/WaveHelm/privacy-policy.html)
+- [License terms](https://1981-teck.github.io/WaveHelm/license-terms.html)
+- [Source code and licenses](https://1981-teck.github.io/WaveHelm/source-code-and-licenses.html)
+- [Support](https://1981-teck.github.io/WaveHelm/support.html)
 
-GitHub Pages is published from **main** → **/docs**.
+GitHub Pages is published from **main → `/docs`**.
 
 ## Screenshots
 
-### Main library and playback
-
-![Library view](docs/screenshots/library.png)
+### Library, playlists, and favorites
 
 ![Playlist view](docs/screenshots/playlist.png)
 
 ![Favorites view](docs/screenshots/favorites.png)
-
 ### Audio shaping and ambient workflow
 
 ![Equalizer page](docs/screenshots/equalizer.png)
