@@ -1,0 +1,74 @@
+name: Feature request
+description: Propose a concrete, scoped improvement to WaveHelm
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement.
+
+        Use Discussions for open-ended ideas or design exploration. Use this form when the requested change is concrete enough to describe and verify.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or limitation
+      description: What current limitation or workflow problem would this feature address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the feature or behavior you would like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: benefit
+    attributes:
+      label: Expected benefit
+      description: Who would benefit and how?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you considered another workflow or solution?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Audio playback
+        - Video playback
+        - DSP / audio processing
+        - Library
+        - Playlists / favorites
+        - Visualizer
+        - Persistence / database
+        - Windows integration
+        - Packaging / installation
+        - Accessibility / UX
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing Issues and Discussions for similar requests.
+          required: true
+        - label: This is a concrete feature request rather than an open-ended discussion.
+          required: true
