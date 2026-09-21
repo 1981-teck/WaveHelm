@@ -20,7 +20,7 @@
 ## Demo
 
 **55-second overview of WaveHelm: Library, audio/video playback, DSP, visualizer, and themes.**
-https://github.com/user-attachments/assets/5658dc35-a158-466e-846a-19f6a827077e
+[▶ Watch the 55-second WaveHelm demo](https://github.com/user-attachments/assets/5658dc35-a158-466e-846a-19f6a827077e)
 
 
 
