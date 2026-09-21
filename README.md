@@ -17,6 +17,13 @@
 [**Discussions**](https://github.com/1981-teck/WaveHelm/discussions) ·
 [**Roadmap**](ROADMAP.md)
 
+## Demo
+
+**55-second overview of WaveHelm: Library, audio/video playback, DSP, visualizer, and themes.**
+https://github.com/user-attachments/assets/5658dc35-a158-466e-846a-19f6a827077e
+
+
+
 ### What it includes
 
 - **Audio and video playback** for local media on Windows
