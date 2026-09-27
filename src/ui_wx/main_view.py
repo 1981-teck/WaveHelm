@@ -16,6 +16,7 @@ from src.ui_wx.main_view_shell import (
 )
 from src.ui_wx.signal import WxSignal
 from src.ui_wx.video_view import ExternalVideoWindow
+from src.utils.media_path_identity import same_media_path
 
 logger = logging.getLogger(__name__)
 
@@ -346,9 +347,9 @@ class MainView:
         return self._external_video_window
 
     def _show_external_video_window(self) -> Any | None:
+        created = self._external_video_window is None
         window = self._ensure_external_video_window()
-        show_window = getattr(window, 'show_window', None)
-        if callable(show_window):
+        if created and callable(show_window := getattr(window, 'show_window', None)):
             show_window()
         request_hwnd = getattr(window, 'request_hwnd_ready', None)
         if callable(request_hwnd):
@@ -510,39 +511,32 @@ class MainView:
             return ''
 
     def _should_ignore_video_playback_stopped(self, data: Any | None) -> bool:
-        """Drop stale VIDEO_PLAYBACK_STOPPED events from a previous video session.
+        """Share terminal-event admission across STOPPED, ERROR and ENDED.
 
-        Edge cases:
-        1. A previous adapter can emit STOPPED after a different video has already been prepared.
-        2. The next session can already have a cached ready signature even when pending_video_request is cleared.
-        3. Legacy STOPPED events without a path must remain backward compatible and cannot be dropped blindly.
+        Keep the historical method name. Pathless legacy events remain admitted;
+        a pending request takes precedence over an older ready signature. URL
+        resource case stays exact. Paths alone cannot distinguish same-path runs.
+        Missing fields retain the legacy no-identity teardown behavior.
         """
+        if getattr(self, '_is_shutting_down', False):
+            return True
         event_path = self._extract_video_event_path(data)
         if not event_path:
             return False
-
-        pending_path = ''
-        if isinstance(self._pending_video_request, dict):
-            try:
-                pending_path = str(self._pending_video_request.get('path') or '').strip()
-            except MAIN_VIEW_EXCEPTIONS:
-                pending_path = ''
-        if pending_path and pending_path.lower() == event_path.lower():
-            return False
-
+        pending_path = self._extract_video_event_path(getattr(self, '_pending_video_request', None))
         ready_path = ''
-        signature = self._last_video_ready_signature
+        signature = getattr(self, '_last_video_ready_signature', None)
         if isinstance(signature, tuple) and len(signature) >= 2:
             try:
                 ready_path = str(signature[1] or '').strip()
             except MAIN_VIEW_EXCEPTIONS:
                 ready_path = ''
-        if ready_path and ready_path.lower() == event_path.lower():
+        current_path = pending_path or ready_path
+        if current_path and same_media_path(current_path, event_path):
             return False
-
-        if pending_path or ready_path or self._video_session_active:
+        if current_path or getattr(self, '_video_session_active', False):
             logger.debug(
-                'wx MainView ignored stale VIDEO_PLAYBACK_STOPPED current=%s ready=%s event=%s',
+                'wx MainView ignored stale video terminal event current=%s ready=%s event=%s',
                 pending_path or '<none>',
                 ready_path or '<none>',
                 event_path,
@@ -578,6 +572,8 @@ class MainView:
         self._update_video_status('Video playback stopped.')
 
     def _on_video_playback_error(self, data: Any | None = None) -> None:
+        if self._should_ignore_video_playback_stopped(data):
+            return
         message = ''
         if isinstance(data, dict):
             message = str(data.get('user_message') or data.get('error') or '').strip()
@@ -646,6 +642,8 @@ class MainView:
         return True
 
     def _on_video_playback_ended(self, _data: Any | None = None) -> None:
+        if self._should_ignore_video_playback_stopped(_data):
+            return
         self._pending_video_request = None
         self._video_session_active = False
         self._close_external_window_on_stop_request = False

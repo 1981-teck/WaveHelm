@@ -42,3 +42,7 @@ IID_IMFMediaEngineEx = GUID.from_string("{83015ead-b1e6-40d0-a98a-37145ffe1ad1}"
 MF_MEDIA_ENGINE_PLAYBACK_HWND = GUID.from_string("{d988879b-67c9-4d92-baa7-6eadd446039d}")
 MF_MEDIA_ENGINE_DXGI_MANAGER = GUID.from_string("{065702da-1094-486d-8617-ee7cc4ee4648}")
 MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT = GUID.from_string("{5066893c-8cf9-42bc-8b8a-472212e52726}")
+
+# Timed-text service identity from mfmediaengine.h (not an engine attribute).
+IID_IMFTimedText = GUID.from_string("{1f2a94c9-a3df-430d-9d0f-acd85ddc29af}")
+MF_MEDIA_ENGINE_TIMEDTEXT = GUID.from_string("{805ea411-92e0-4e59-9b6e-5c7d7915e64f}")

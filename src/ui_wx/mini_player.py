@@ -5,18 +5,20 @@ import logging
 from typing import Any, Callable
 
 from src.audio.audio_event_models import AudioEventType
-from src.controller.playback_status import get_duration, get_position, is_video_current, seek_to
+from src.ui_wx.progress_gesture_wx import ProgressGestureMixin
+from src.ui_wx.progress_motion import FRAME_INTERVAL_MS
+from src.controller.playback_view import PlaybackView
+from src.controller.component_player.playback_state_manager import PlayerState
+from src.playback_observation import ReadingStatus
+from src.ui_wx.playback_presentation import DisplayReading, PlaybackPresentation
 from src.ui_wx.common import (
     WX_CALLBACK_EXCEPTIONS,
-    apply_colors,
-    create_flow_sizer,
-    get_localized_text,
-    get_theme_colors,
-    register_callback,
+    prepare_progress_slider,
     set_label_text,
+    set_progress_slider_value,
     unregister_callback,
 )
-from src.ui_wx.mini_player_shared import format_time, resolve_track_title
+from src.ui_wx.mini_player_shared import format_time
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +29,14 @@ _INTERRUPT_ACTION_EVENTS = {
 }
 
 
-class MiniPlayer:
-    """wx-based mini player for the temporary migration shell.
+from src.ui_wx.mini_player_chrome import MiniPlayerChrome
 
-    Edge cases handled deterministically:
-    1. Stale playback progress from a previous track is ignored using the current media path snapshot.
-    2. Missing timer helpers or controller hooks degrade to manual refresh without breaking playback controls.
-    3. Event bus callbacks are marshalled through wx.CallAfter when available to avoid cross-thread UI updates.
-    4. Progress bar pointer seeks clamp zero-width surfaces and out-of-range mouse coordinates before issuing seek requests.
+class MiniPlayer(ProgressGestureMixin, MiniPlayerChrome):
+    """wx mini-player rendering current cache-only playback views.
+
+    Delayed events only request a fresh view; no scalar clock polling occurs on
+    the GUI thread. Closed widgets, unknown samples and failed timers are guarded.
+    Pointer/key gestures use the shared preview/commit contract; native UI validation remains open.
     """
 
     def __init__(
@@ -72,7 +74,12 @@ class MiniPlayer:
         self._is_playing = False
         self._shuffle_enabled = False
         self._loop_enabled = False
+        self._display_reading = DisplayReading()
+        self._presentation = PlaybackPresentation(
+            lambda: self.player_controller, self._render_playback,
+            getattr(self._wx, 'CallAfter', None), surface='mini')
         self._build_ui()
+        prepare_progress_slider(self.progress_slider)
         self._bind_controls()
         self._register_callbacks()
         self._subscribe_events()
@@ -81,82 +88,6 @@ class MiniPlayer:
         self.update_theme_colors()
         self._schedule_progress_timer()
 
-    def _build_ui(self) -> None:
-        wx = self._wx
-        root = wx.BoxSizer(wx.VERTICAL)
-        self.track_label = wx.StaticText(self.panel, label='WaveHelm')
-        self.state_label = wx.StaticText(self.panel, label='--')
-        info_row = wx.BoxSizer(wx.HORIZONTAL)
-        info_row.Add(self.track_label, 1, wx.ALL | wx.EXPAND, 6)
-        info_row.Add(self.state_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 6)
-        self.shuffle_button = wx.Button(self.panel, label='Shuffle')
-        self.loop_button = wx.Button(self.panel, label='Loop')
-        self.prev_button = wx.Button(self.panel, label='Prev')
-        self.play_button = wx.Button(self.panel, label='Play')
-        self.pause_button = wx.Button(self.panel, label='Pause')
-        self.next_button = wx.Button(self.panel, label='Next')
-        self.stop_button = wx.Button(self.panel, label='Stop')
-        self.volume_caption = wx.StaticText(self.panel, label='Volume')
-        self.volume_slider = wx.Slider(self.panel, value=100, minValue=0, maxValue=100)
-        self.mute_button = wx.Button(self.panel, label='Mute')
-        controls_row = create_flow_sizer(wx)
-        for widget in (
-            self.shuffle_button,
-            self.loop_button,
-            self.prev_button,
-            self.play_button,
-            self.pause_button,
-            self.next_button,
-            self.stop_button,
-            self.volume_caption,
-            self.volume_slider,
-            self.mute_button,
-        ):
-            controls_row.Add(widget, 0 if widget is not self.volume_slider else 1, wx.ALL | wx.EXPAND, 4)
-        self.time_left_label = wx.StaticText(self.panel, label='--:--')
-        self.progress_slider = wx.Slider(self.panel, value=0, minValue=0, maxValue=1000)
-        self.time_right_label = wx.StaticText(self.panel, label='--:--')
-        progress_row = wx.BoxSizer(wx.HORIZONTAL)
-        progress_row.Add(self.time_left_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 6)
-        progress_row.Add(self.progress_slider, 1, wx.ALL | wx.EXPAND, 4)
-        progress_row.Add(self.time_right_label, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 6)
-        root.Add(info_row, 0, wx.ALL | wx.EXPAND, 0)
-        root.Add(controls_row, 0, wx.ALL | wx.EXPAND, 0)
-        root.Add(progress_row, 0, wx.ALL | wx.EXPAND, 0)
-        self.panel.SetSizer(root)
-
-    def _bind_controls(self) -> None:
-        wx = self._wx
-        self.shuffle_button.Bind(wx.EVT_BUTTON, lambda _event: self._defer_player_action('toggle_shuffle'))
-        self.loop_button.Bind(wx.EVT_BUTTON, lambda _event: self._defer_player_action('toggle_loop'))
-        self.prev_button.Bind(wx.EVT_BUTTON, lambda _event: self._defer_player_action('previous'))
-        self.play_button.Bind(wx.EVT_BUTTON, lambda _event: self._defer_player_action('play_action'))
-        self.pause_button.Bind(wx.EVT_BUTTON, lambda _event: self._defer_player_action('pause'))
-        self.next_button.Bind(wx.EVT_BUTTON, lambda _event: self._defer_player_action('next'))
-        self.stop_button.Bind(wx.EVT_BUTTON, lambda _event: self._defer_player_action('stop'))
-        self.mute_button.Bind(wx.EVT_BUTTON, self._on_mute_clicked)
-        slider_event = getattr(wx, 'EVT_SLIDER', wx.EVT_BUTTON)
-        self.volume_slider.Bind(slider_event, self._on_volume_slider_changed)
-        self.progress_slider.Bind(slider_event, self._on_progress_slider_changed)
-        pointer_down_event = getattr(wx, 'EVT_LEFT_DOWN', None)
-        if pointer_down_event is not None:
-            self.progress_slider.Bind(pointer_down_event, self._on_progress_slider_pointer_down)
-
-    def _register_callbacks(self) -> None:
-        register_callback(
-            self.localization_manager,
-            'register_language_change_callback',
-            self.update_localization,
-            logger=logger,
-            message='Unable to register wx MiniPlayer language callback.',
-        )
-        register_callback(
-            self.theme_manager,
-            'register_theme_change_callback',
-            self.update_theme_colors,
-            logger=logger,
-            message='Unable to register wx MiniPlayer theme callback.',
-        )
 
     def _subscribe_events(self) -> None:
         subscribe = getattr(self.event_bus, 'subscribe', None)
@@ -164,6 +95,7 @@ class MiniPlayer:
             return
         bindings = {
             AudioEventType.PLAYBACK_PROGRESS: self._handle_progress_event,
+            AudioEventType.PLAYBACK_PRESENTATION_FINISHED: self._handle_terminal_event,
             AudioEventType.PLAYER_STATE_CHANGED: self._handle_state_event,
             AudioEventType.VOLUME_CHANGED: self._handle_volume_event,
             AudioEventType.MUTE_CHANGED: self._handle_mute_event,
@@ -188,25 +120,9 @@ class MiniPlayer:
                 self._muted = bool(muted_getter())
             except WX_CALLBACK_EXCEPTIONS:
                 logger.debug('wx MiniPlayer mute bootstrap failed.', exc_info=True)
-        state_getter = getattr(self.player_controller, 'get_current_player_state_payload', None)
-        if callable(state_getter):
-            try:
-                payload = state_getter() or {}
-            except WX_CALLBACK_EXCEPTIONS:
-                payload = {}
-            self._apply_player_state(payload if isinstance(payload, dict) else {})
+        self._poll_progress()
         self._update_time_labels()
 
-    def _read_initial_volume(self) -> float:
-        getter = getattr(self.audio_engine, 'get_volume', None)
-        if not callable(getter):
-            return 1.0
-        try:
-            volume = float(getter() or 1.0)
-        except (OverflowError, TypeError, ValueError) + WX_CALLBACK_EXCEPTIONS:
-            logger.debug('wx MiniPlayer volume bootstrap failed.', exc_info=True)
-            return 1.0
-        return max(0.0, min(1.0, volume))
 
     def _schedule_progress_timer(self) -> None:
         if self._closed or self._timer_running:
@@ -215,31 +131,44 @@ class MiniPlayer:
         if not callable(call_later):
             return
         self._timer_running = True
-        self._progress_timer = call_later(200, self._on_progress_timer_tick)
+        try:
+            self._progress_timer = call_later(FRAME_INTERVAL_MS, self._on_progress_timer_tick)
+        except WX_CALLBACK_EXCEPTIONS:
+            logger.debug('Mini-player timer unavailable; closing view.', exc_info=True)
+            self._timer_running = False
+            self.close()
+
 
     def _on_progress_timer_tick(self) -> None:
         self._timer_running = False
+        self._progress_timer = None
         if self._closed:
             return
-        self._poll_progress()
-        self._schedule_progress_timer()
+        try:
+            self._poll_progress()
+        finally:
+            self._schedule_progress_timer()
+
 
     def _poll_progress(self) -> None:
-        if self._dragging or self.player_controller is None:
-            return
-        duration = get_duration(self.player_controller) or self._current_duration
-        position = get_position(self.player_controller) or self._current_position
-        self._current_duration = max(0.0, float(duration or 0.0))
-        self._current_position = max(0.0, float(position or 0.0))
-        self._sync_progress_slider()
-        self._update_time_labels()
+        """Read only cached state; no COM/mixer call from the GUI timer."""
+        if not self._closed:
+            self._presentation.refresh()
+
 
     def _defer_ui(self, callback: Callable[..., None], *args: Any) -> None:
+        """wx callback boundary: late UI work cannot touch a closed mini-player."""
+        def deliver() -> None:
+            if not self._closed:
+                callback(*args)
+        if self._closed:
+            return
         call_after = getattr(self._wx, 'CallAfter', None)
         if callable(call_after):
-            call_after(callback, *args)
-            return
-        callback(*args)
+            call_after(deliver)
+        else:
+            deliver()
+
 
     def _defer_player_action(self, method_name: str) -> None:
         """Dispatch mini-player actions through a single transport path.
@@ -270,11 +199,15 @@ class MiniPlayer:
             logger.debug('wx MiniPlayer interruption publish failed for %s.', event_type, exc_info=True)
             return False
 
-    def _handle_progress_event(self, payload: Any) -> None:
-        self._defer_ui(self._apply_progress_payload, payload if isinstance(payload, dict) else {})
+    def _handle_progress_event(self, payload: object) -> None:
+        # Events only wake the current cache reader; never retain old numbers/state.
+        self._presentation.request()
 
-    def _handle_state_event(self, payload: Any) -> None:
-        self._defer_ui(self._apply_player_state, payload if isinstance(payload, dict) else {})
+
+    def _handle_state_event(self, payload: object) -> None:
+        # Events only wake the current cache reader; never retain old numbers/state.
+        self._presentation.request()
+
 
     def _handle_volume_event(self, payload: Any) -> None:
         self._defer_ui(self._apply_volume_payload, payload if isinstance(payload, dict) else {})
@@ -288,134 +221,72 @@ class MiniPlayer:
     def _handle_loop_event(self, payload: Any) -> None:
         self._defer_ui(self._apply_loop_payload, payload if isinstance(payload, dict) else {})
 
-    def _handle_video_duration_event(self, payload: Any) -> None:
-        self._defer_ui(self._apply_video_duration_payload, payload if isinstance(payload, dict) else {})
+    def _handle_video_duration_event(self, payload: object) -> None:
+        # Events only wake the current cache reader; never retain old numbers/state.
+        self._presentation.request()
 
-    def _apply_player_state(self, payload: dict[str, Any]) -> None:
-        if not payload:
-            return
-        track = payload.get('current_track')
-        title = resolve_track_title(track)
-        if title:
-            self._current_track_title = title
-            self._current_media_path = self._extract_path(track)
-        self._is_playing = bool(payload.get('playing', False))
-        if payload.get('reset_progress') or (payload.get('stopped') and not title):
-            self._reset_progress_state(clear_path=True)
-        self._sync_enabled_buttons(payload)
-        self._apply_shuffle_payload(payload)
-        self._apply_loop_payload(payload)
-        self._refresh_track_and_state_text(payload)
 
-    def _extract_path(self, track: Any) -> str:
-        if isinstance(track, dict):
-            value = track.get('path')
-        else:
-            value = getattr(track, 'path', None)
-        return str(value or '').strip()
+    def _apply_player_state(self, payload: object) -> None:
+        """Compatibility entry point; payload is not an authority for current state."""
+        self._poll_progress()
 
-    def _sync_enabled_buttons(self, payload: dict[str, Any]) -> None:
-        state_map = {
-            self.play_button: payload.get('play'),
-            self.pause_button: payload.get('pause'),
-            self.stop_button: payload.get('stop'),
-            self.next_button: payload.get('next'),
-            self.prev_button: payload.get('prev'),
-        }
-        for widget, state in state_map.items():
-            self._set_enabled(widget, state != 'disabled')
 
-    def _set_enabled(self, widget: Any, enabled: bool) -> None:
-        setter = getattr(widget, 'Enable', None)
-        if callable(setter):
-            setter(bool(enabled))
 
-    def _refresh_track_and_state_text(self, payload: dict[str, Any] | None = None) -> None:
-        title = self._current_track_title or get_localized_text(
-            self.localization_manager,
-            'mini_player_no_media',
-            'No media loaded in MiniPlayer.',
-        )
-        set_label_text(self.track_label, title)
-        if (payload and payload.get('playing')) or self._is_playing:
-            state = get_localized_text(self.localization_manager, 'mini_player_state_playing', 'MiniPlayer state: playing.')
-        else:
-            state = get_localized_text(self.localization_manager, 'mini_player_state_paused_stopped', 'MiniPlayer state: paused/stopped.')
-        set_label_text(self.state_label, state)
+    def _apply_progress_payload(self, payload: object) -> None:
+        """Compatibility entry point; payload is not an authority for current state."""
+        self._poll_progress()
 
-    def _apply_progress_payload(self, payload: dict[str, Any]) -> None:
-        path_value = str(payload.get('path') or '').strip()
-        if path_value and self._current_media_path and path_value.lower() != self._current_media_path.lower():
-            return
-        if path_value:
-            self._current_media_path = path_value
-        self._current_position = max(0.0, self._safe_float(payload.get('current_time', payload.get('position', 0.0))))
-        duration = payload.get('total_duration', payload.get('duration'))
-        if duration is not None:
-            self._current_duration = max(0.0, self._safe_float(duration))
-        self._sync_progress_slider()
-        self._update_time_labels()
 
-    def _apply_video_duration_payload(self, payload: dict[str, Any]) -> None:
-        duration = payload.get('duration')
-        if duration is None:
-            return
-        path_value = str(payload.get('path') or '').strip()
-        if path_value and self._current_media_path and path_value.lower() != self._current_media_path.lower():
-            return
-        if path_value:
-            self._current_media_path = path_value
-        self._current_duration = max(0.0, self._safe_float(duration))
-        self._sync_progress_slider()
-        self._update_time_labels()
+    def _apply_video_duration_payload(self, payload: object) -> None:
+        """Compatibility entry point; payload is not an authority for current state."""
+        self._poll_progress()
 
-    def _safe_float(self, value: Any) -> float:
+
+    def _render_playback(self, view: PlaybackView | None, reading: DisplayReading) -> bool:
+        """Apply one coherent pair; widget destruction fails closed at this boundary."""
+        if self._closed or not self._progress_allows_render(view, reading):
+            return False
         try:
-            return float(value or 0.0)
-        except (OverflowError, TypeError, ValueError):
-            return 0.0
+            old = self._display_reading
+            cursor_only = (view is not None and view == getattr(self, '_paint_view', None)
+                           and (reading.position, reading.duration, reading.status, reading.seek_phase)
+                           == (old.position, old.duration, old.status, old.seek_phase))
+            self._display_reading = reading
+            if cursor_only:
+                self._sync_progress_slider()
+                return not self._closed
+            self._paint_view = view
+            self._current_position = reading.position if reading.position is not None else 0.0
+            self._current_duration = reading.duration if reading.duration is not None else 0.0
+            self._current_media_path = view.path or '' if view else ''
+            self._current_track_title = view.title if view else ''
+            self._is_playing = view is not None and view.state in (
+                PlayerState.PLAYING_AUDIO, PlayerState.PLAYING_VIDEO)
+            if view is not None:
+                self._shuffle_enabled, self._loop_enabled = view.shuffle, view.loop
+            self._refresh_track_and_state_text()
+            self._refresh_toggle_labels()
+            has_media = view is not None and view.path is not None
+            loading = view is not None and view.state is PlayerState.LOADING
+            self._set_enabled(self.play_button, has_media and not loading and not self._is_playing)
+            self._set_enabled(self.pause_button, self._is_playing)
+            self._set_enabled(self.stop_button, has_media)
+            self._set_enabled(self.prev_button, has_media)
+            self._set_enabled(self.next_button, has_media)
+            self._sync_progress_slider()
+            self._update_time_labels()
+            return True
+        except WX_CALLBACK_EXCEPTIONS:
+            logger.debug('Mini-player presentation failed; closing view.', exc_info=True)
+            self.close()
+            return False
 
-    def _apply_volume_payload(self, payload: dict[str, Any]) -> None:
-        volume = payload.get('volume')
-        if volume is None:
-            return
-        try:
-            value = max(0.0, min(1.0, float(volume)))
-        except (OverflowError, TypeError, ValueError):
-            return
-        self._set_volume_slider(value)
 
-    def _set_volume_slider(self, value: float) -> None:
-        if value > 0.0:
-            self._last_nonzero_volume = value
-        self._volume_sync = True
-        self.volume_slider.SetValue(int(round(value * 100)))
-        self._volume_sync = False
-
-    def _apply_mute_payload(self, payload: dict[str, Any]) -> None:
-        self._muted = bool(payload.get('muted', False))
-        self._refresh_mute_label()
-
-    def _apply_shuffle_payload(self, payload: dict[str, Any]) -> None:
-        self._shuffle_enabled = bool(payload.get('shuffle_enabled', payload.get('shuffled', self._shuffle_enabled)))
-        self._refresh_toggle_labels()
-
-    def _apply_loop_payload(self, payload: dict[str, Any]) -> None:
-        self._loop_enabled = bool(payload.get('loop_enabled', self._loop_enabled))
-        self._refresh_toggle_labels()
-
-    def _refresh_toggle_labels(self) -> None:
-        shuffle = get_localized_text(self.localization_manager, 'btn_shuffle', 'Shuffle')
-        loop = get_localized_text(self.localization_manager, 'btn_loop', 'Loop')
-        set_label_text(self.shuffle_button, f'{shuffle} ✓' if self._shuffle_enabled else shuffle)
-        set_label_text(self.loop_button, f'{loop} ✓' if self._loop_enabled else loop)
-
-    def _refresh_mute_label(self) -> None:
-        mute = get_localized_text(self.localization_manager, 'tooltip_mute', 'Mute/Unmute')
-        suffix = ' ✓' if self._muted else ''
-        set_label_text(self.mute_button, f'{mute}{suffix}')
 
     def _reset_progress_state(self, *, clear_path: bool) -> None:
+        self._display_reading = DisplayReading()
+        self._paint_view = None
+        self._presentation.invalidate_paint()
         self._current_position = 0.0
         self._current_duration = 0.0
         if clear_path:
@@ -423,172 +294,48 @@ class MiniPlayer:
         self._sync_progress_slider()
         self._update_time_labels()
 
+    def _handle_terminal_event(self, payload: object = None) -> None:
+        self._presentation.refresh_terminal()
+
     def _sync_progress_slider(self) -> None:
-        if self._dragging:
+        if self._closed or self._dragging:
             return
-        value = 0
-        if self._current_duration > 0:
-            ratio = max(0.0, min(1.0, self._current_position / self._current_duration))
-            value = int(round(ratio * 1000))
+        value = int(round(self._display_reading.visual_ratio * 1000.0))
         self._updating_progress_slider = True
-        self.progress_slider.SetValue(value)
-        self._updating_progress_slider = False
+        try:
+            set_progress_slider_value(self.progress_slider, value)
+            if self._display_reading.terminal:
+                # Final UI handoff only, never a per-tick forced paint or delay.
+                self.progress_slider.Refresh()
+                if not self._closed:
+                    self.progress_slider.Update()
+        finally:
+            self._updating_progress_slider = False
+
 
     def _update_time_labels(self) -> None:
-        set_label_text(self.time_left_label, format_time(self._current_position))
-        right_value = self._current_duration or self._current_position
-        set_label_text(self.time_right_label, format_time(right_value))
+        known = self._display_reading.status is ReadingStatus.KNOWN
+        set_label_text(self.time_left_label, format_time(self._current_position) if known else '--:--')
+        set_label_text(self.time_right_label, format_time(self._current_duration) if known else '--:--')
+
 
     def _set_progress_slider_value(self, ratio: float) -> None:
+        if self._closed:
+            return
         slider_value = int(round(max(0.0, min(1.0, ratio)) * 1000.0))
         self._updating_progress_slider = True
-        self.progress_slider.SetValue(slider_value)
-        self._updating_progress_slider = False
-
-    def _seek_from_progress_ratio(self, ratio: float) -> bool:
-        if self._current_duration <= 0:
-            return False
-        target = max(0.0, min(1.0, ratio)) * self._current_duration
-        self._current_position = target
-        self._update_time_labels()
-        return bool(seek_to(self.player_controller, target))
-
-    def _pointer_ratio_from_progress_event(self, event: Any | None) -> float | None:
-        if event is None:
-            return None
-        position_getter = getattr(event, 'GetX', None)
-        if callable(position_getter):
-            raw_position = position_getter()
-        else:
-            point_getter = getattr(event, 'GetPosition', None)
-            raw_position = point_getter() if callable(point_getter) else None
-        if isinstance(raw_position, tuple):
-            raw_position = raw_position[0] if raw_position else None
-        elif hasattr(raw_position, 'x'):
-            raw_position = getattr(raw_position, 'x')
         try:
-            pointer_x = float(raw_position)
-        except (OverflowError, TypeError, ValueError):
-            return None
-        size_getter = getattr(self.progress_slider, 'GetClientSize', None)
-        slider_size = size_getter() if callable(size_getter) else None
-        if slider_size is None:
-            size_getter = getattr(self.progress_slider, 'GetSize', None)
-            slider_size = size_getter() if callable(size_getter) else None
-        if isinstance(slider_size, tuple):
-            slider_width = slider_size[0] if slider_size else 0
-        else:
-            slider_width = getattr(slider_size, 'width', getattr(slider_size, 'x', 0))
-        try:
-            width = float(slider_width)
-        except (OverflowError, TypeError, ValueError):
-            return None
-        if width <= 1.0:
-            return None
-        clamped_x = max(0.0, min(width - 1.0, pointer_x))
-        return clamped_x / (width - 1.0)
+            set_progress_slider_value(self.progress_slider, slider_value)
+        finally:
+            self._updating_progress_slider = False
 
-    def _on_progress_slider_changed(self, _event: Any | None = None) -> None:
-        if self._updating_progress_slider:
-            return
-        self._dragging = True
-        ratio = float(self.progress_slider.GetValue()) / 1000.0
-        self._seek_from_progress_ratio(ratio)
-        self._dragging = False
-        self._sync_progress_slider()
-
-    def _on_progress_slider_pointer_down(self, event: Any | None = None) -> None:
-        if self._updating_progress_slider:
-            return
-        ratio = self._pointer_ratio_from_progress_event(event)
-        if ratio is None or self._current_duration <= 0:
-            skipper = getattr(event, 'Skip', None)
-            if callable(skipper):
-                skipper()
-            return
-        self._dragging = True
-        self._set_progress_slider_value(ratio)
-        self._seek_from_progress_ratio(ratio)
-        self._dragging = False
-        self._sync_progress_slider()
-
-    def _on_volume_slider_changed(self, _event: Any | None = None) -> None:
-        if self._volume_sync:
-            return
-        value = max(0.0, min(1.0, float(self.volume_slider.GetValue()) / 100.0))
-        if value > 0.0:
-            self._last_nonzero_volume = value
-        setter = getattr(self.player_controller, 'set_volume', None)
-        if callable(setter):
-            setter(value)
-        if self._muted and value > 0.0:
-            mute_setter = getattr(self.audio_engine, 'set_mute', None)
-            if callable(mute_setter):
-                mute_setter(False)
-            self._muted = False
-            self._refresh_mute_label()
-
-    def _on_mute_clicked(self, _event: Any | None = None) -> None:
-        new_muted = not self._muted
-        if is_video_current(self.player_controller):
-            target = 0.0 if new_muted else self._last_nonzero_volume
-            setter = getattr(self.player_controller, 'set_volume', None)
-            if callable(setter):
-                setter(target)
-            self._set_volume_slider(target)
-            self._muted = new_muted
-            self._refresh_mute_label()
-            return
-        mute_setter = getattr(self.audio_engine, 'set_mute', None)
-        if callable(mute_setter):
-            mute_setter(new_muted)
-        self._muted = new_muted
-        self._refresh_mute_label()
-
-    def update_localization(self, *_: Any) -> None:
-        set_label_text(self.volume_caption, get_localized_text(self.localization_manager, 'btn_volume', 'Volume'))
-        set_label_text(self.prev_button, get_localized_text(self.localization_manager, 'btn_prev', 'Previous'))
-        set_label_text(self.play_button, get_localized_text(self.localization_manager, 'btn_play', 'Play'))
-        set_label_text(self.pause_button, get_localized_text(self.localization_manager, 'btn_pause', 'Pause'))
-        set_label_text(self.next_button, get_localized_text(self.localization_manager, 'btn_next', 'Next'))
-        set_label_text(self.stop_button, get_localized_text(self.localization_manager, 'btn_stop', 'Stop'))
-        self._refresh_toggle_labels()
-        self._refresh_mute_label()
-        self._refresh_track_and_state_text()
-
-    def update_theme_colors(self, *_: Any) -> None:
-        colors = get_theme_colors(self.theme_manager)
-        background = colors.get('footer_bg') or colors.get('panel_bg') or colors.get('bg_color')
-        foreground = colors.get('text_color')
-        accent = colors.get('button_color') or background
-        widgets = [
-            self.panel,
-            self.track_label,
-            self.state_label,
-            self.volume_caption,
-            self.time_left_label,
-            self.progress_slider,
-            self.time_right_label,
-            self.volume_slider,
-        ]
-        for widget in widgets:
-            apply_colors(widget, background=background, foreground=foreground)
-        for button in (
-            self.shuffle_button,
-            self.loop_button,
-            self.prev_button,
-            self.play_button,
-            self.pause_button,
-            self.next_button,
-            self.stop_button,
-            self.mute_button,
-        ):
-            apply_colors(button, background=accent, foreground=foreground)
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self._cancel_progress_gesture(repaint=False)
+        self._presentation.close()
         self._stop_timer()
         unsubscribe = getattr(self.event_bus, 'unsubscribe', None)
         if callable(unsubscribe):
@@ -614,8 +361,12 @@ class MiniPlayer:
         self._subscriptions.clear()
 
     def _stop_timer(self) -> None:
-        stopper = getattr(self._progress_timer, 'Stop', None)
-        if callable(stopper):
-            stopper()
+        timer = self._progress_timer
         self._progress_timer = None
         self._timer_running = False
+        stopper = getattr(timer, 'Stop', None)
+        if callable(stopper):
+            try:
+                stopper()
+            except WX_CALLBACK_EXCEPTIONS:
+                logger.debug('Mini-player timer cancellation failed after invalidation.', exc_info=True)

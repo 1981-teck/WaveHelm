@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
 from src.audio.audio_events import AudioEventType
 from src.controller import playlist_controller_support as support
+from src.model.component_database.playlist_position import (
+    PlaylistPositionInvariantError,
+)
 
 
 class DummyDatabaseManager:
@@ -86,16 +91,16 @@ class DummyController:
 support.attach_playlist_controller_support_behavior(DummyController)
 
 
-def test_refresh_cache_loads_sorted_items_and_marks_valid():
+def test_refresh_cache_loads_exact_items_and_marks_valid():
     db = DummyDatabaseManager(
         playlists=[{'id': 2, 'name': 'Beta'}, {'id': 1, 'name': 'Alpha'}],
         items={
             2: [
-                {'position': 3, 'media_path': 'c.mp3'},
-                {'position': 1, 'media_path': 'a.mp3'},
+                {'playlist_id': 2, 'position': 1, 'media_path': 'a.mp3'},
+                {'playlist_id': 2, 'position': 2, 'media_path': 'c.mp3'},
             ],
             1: [
-                {'media_path': 'x.mp3'},
+                {'playlist_id': 1, 'position': 1, 'media_path': 'x.mp3'},
             ],
         },
     )
@@ -105,8 +110,8 @@ def test_refresh_cache_loads_sorted_items_and_marks_valid():
 
     assert controller._cache_valid is True
     assert controller._playlists_cache[1]['name'] == 'Alpha'
-    assert controller._playlist_items_cache[2] == [(1, 'a.mp3'), (3, 'c.mp3')]
-    assert controller._playlist_items_cache[1] == [(0, 'x.mp3')]
+    assert controller._playlist_items_cache[2] == [(1, 'a.mp3'), (2, 'c.mp3')]
+    assert controller._playlist_items_cache[1] == [(1, 'x.mp3')]
     assert controller.synced == 1
 
 
@@ -185,3 +190,122 @@ def test_validate_name_exists_and_close_reset_state():
     assert controller._current_playlist_id is None
     assert controller._currently_playing is None
     assert controller._cache_valid is False
+
+
+@pytest.mark.parametrize(
+    'rows',
+    [
+        [{'position': 0, 'media_path': 'zero.mp3'}],
+        [{'position': 2, 'media_path': 'gap.mp3'}],
+        [
+            {'position': 1, 'media_path': 'first.mp3'},
+            {'position': 1, 'media_path': 'duplicate-position.mp3'},
+        ],
+        [
+            {'position': 2, 'media_path': 'second.mp3'},
+            {'position': 1, 'media_path': 'first.mp3'},
+        ],
+        [{'media_path': 'missing-position.mp3'}],
+        [{'position': True, 'media_path': 'boolean.mp3'}],
+        [{'position': '1', 'media_path': 'text.mp3'}],
+        [{'position': 1, 'media_path': ''}],
+        [{'position': 1, 'media_path': ' padded.mp3'}],
+        [{'position': 1, 'media_path': 'bad\x00path'}],
+        [{'position': 1, 'media_path': 'x' * 32_769}],
+        [
+            {'position': 1, 'media_path': 'same.mp3'},
+            {'position': 2, 'media_path': 'same.mp3'},
+        ],
+        [{'playlist_id': 2, 'position': 1, 'media_path': 'wrong-owner.mp3'}],
+        [{'playlist_id': True, 'position': 1, 'media_path': 'boolean-owner.mp3'}],
+        ['not-a-row'],
+    ],
+)
+def test_refresh_cache_rejects_invalid_item_sequences_without_repair(rows: object) -> None:
+    db = DummyDatabaseManager(
+        playlists=[{'id': 1, 'name': 'Exact'}],
+        items={1: rows},
+    )
+    controller = DummyController(db, ModernLocalizationManager(), DummyEventBus())
+    controller._playlists_cache = {99: {'id': 99, 'name': 'Previous'}}
+    controller._playlist_items_cache = {99: [(1, 'previous.mp3')]}
+
+    with pytest.raises(support.PlaylistCacheInvariantError):
+        controller._refresh_cache()
+
+    assert controller._cache_valid is False
+    assert controller._playlists_cache == {99: {'id': 99, 'name': 'Previous'}}
+    assert controller._playlist_items_cache == {99: [(1, 'previous.mp3')]}
+    assert controller.synced == 0
+
+
+@pytest.mark.parametrize(
+    'playlists',
+    [
+        [{'id': 0, 'name': 'Zero'}],
+        [{'id': True, 'name': 'Boolean'}],
+        [{'id': '1', 'name': 'Text'}],
+        [{'id': 1, 'name': ''}],
+        [{'id': 1, 'name': 'First'}, {'id': 1, 'name': 'Second'}],
+        [{'id': 1, 'name': 'Straße'}, {'id': 2, 'name': 'STRASSE'}],
+        ['not-a-row'],
+    ],
+)
+def test_refresh_cache_rejects_invalid_playlist_inventory(playlists: object) -> None:
+    controller = DummyController(
+        DummyDatabaseManager(playlists=playlists),
+        ModernLocalizationManager(),
+        DummyEventBus(),
+    )
+
+    with pytest.raises(support.PlaylistCacheInvariantError):
+        controller._refresh_cache()
+
+    assert controller._cache_valid is False
+    assert controller.synced == 0
+
+
+def test_refresh_cache_rejects_non_sequence_boundaries() -> None:
+    controller = DummyController(
+        DummyDatabaseManager(playlists=[{'id': 1, 'name': 'One'}]),
+        ModernLocalizationManager(),
+        DummyEventBus(),
+    )
+    controller.database_manager.get_playlist_items = lambda playlist_id: {
+        'playlist_id': playlist_id, 'position': 1, 'media_path': 'x.mp3'
+    }
+
+    with pytest.raises(support.PlaylistCacheInvariantError, match='sequence'):
+        controller._refresh_cache()
+
+    controller.database_manager.get_all_playlists = lambda: {
+        'id': 1, 'name': 'One'
+    }
+    with pytest.raises(support.PlaylistCacheInvariantError, match='sequence'):
+        controller._refresh_cache()
+
+
+
+def test_initialize_routes_database_position_invariant_without_committing_cache() -> None:
+    db = DummyDatabaseManager(
+        playlists=[{'id': 1, 'name': 'Corrupt'}],
+        items={1: [{'position': 1, 'media_path': 'one.mp3'}]},
+    )
+    controller = DummyController(db, ModernLocalizationManager(), DummyEventBus())
+    handled: list[tuple[str, str]] = []
+    def fail_items(playlist_id: int) -> list[dict[str, object]]:
+        raise PlaylistPositionInvariantError(f'corrupt playlist {playlist_id}')
+
+    controller.database_manager.get_playlist_items = fail_items
+    controller._handle_error = lambda error, key, **kwargs: handled.append(
+        (type(error).__name__, key)
+    )
+
+    controller._initialize_controller()
+
+    assert controller._cache_valid is False
+    assert controller._playlists_cache == {}
+    assert controller._playlist_items_cache == {}
+    assert handled == [
+        ('PlaylistPositionInvariantError', 'error_initializing_playlist_controller')
+    ]

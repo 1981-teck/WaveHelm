@@ -63,6 +63,7 @@ class DummyAdapter:
     def seek(self, value):
         self._maybe_fail('seek')
         self.calls.append(('seek', value))
+        return True  # Exact queue admission; not native completion.
 
     def pump_events(self):
         self._maybe_fail('pump_events')

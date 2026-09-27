@@ -6,9 +6,11 @@ from either AudioEngine or VideoController using only a PlayerController instanc
 from __future__ import annotations
 
 import logging
+import math
 from typing import Optional
 
 from src.model.media_file import MediaType
+from .component_player.engine_controller import SeekDispatch
 
 logger = logging.getLogger(__name__)
 
@@ -156,40 +158,27 @@ def get_position(player_controller) -> Optional[float]:
 
 
 
-def seek_to(player_controller, seconds: float) -> bool:
-    """Seek current media to absolute 'seconds'. Returns True if performed."""
-    try:
-        seconds = float(seconds)
-    except FORMAT_EXCEPTIONS:
-        logger.exception('seek_to failed')
+def seek_to(player_controller: object, seconds: float) -> bool:
+    """Request a seek through the facade, never directly through a backend.
+
+    True means forwarded/unconfirmed, not a completed native seek. Missing or
+    rejecting facade methods never fall back to raw audio/video methods. Invalid
+    numeric values are rejected; negative finite values retain the zero clamp.
+    Exact True from a compatible facade is accepted only as request forwarding;
+    None and other truthy return values are not affirmative dispatch results.
+    """
+    if type(seconds) not in (int, float):
         return False
-
-    if seconds < 0:
-        seconds = 0.0
-
     try:
-        if is_video_current(player_controller):
-            video_controller = _get_video_controller(player_controller)
-            if video_controller is not None:
-                fn = getattr(video_controller, 'seek', None)
-                if callable(fn):
-                    try:
-                        return bool(fn(seconds))
-                    except ENGINE_EXCEPTIONS:
-                        logger.debug('VideoController.seek failed', exc_info=True)
+        target = float(seconds)
+        if not math.isfinite(target):
             return False
-
-        audio_engine = _get_audio_engine(player_controller)
-        if audio_engine is not None:
-            for name in ('seek', 'set_position', 'set_pos'):
-                fn = getattr(audio_engine, name, None)
-                if callable(fn):
-                    try:
-                        fn(float(seconds))
-                        return True
-                    except ENGINE_EXCEPTIONS:
-                        logger.debug('AudioEngine.%s failed', name, exc_info=True)
-        return False
-    except LOOKUP_EXCEPTIONS:
-        logger.exception('seek_to failed')
+        invoke = getattr(player_controller, 'seek', None)
+        if not callable(invoke):
+            return False
+        result = invoke(max(0.0, target))
+        return result is SeekDispatch.FORWARDED_UNCONFIRMED or result is True
+    except (AttributeError, RuntimeError, TypeError, ValueError, OSError, OverflowError) as exc:
+        logger.warning('Guarded seek request failed (%s): %s',
+                       type(exc).__name__, exc, exc_info=True)
         return False

@@ -1,6 +1,8 @@
 include .gitignore
 include AUTHORS
 include CHANGELOG.md
+include CONTRIBUTING.md
+include CODE_OF_CONDUCT.md
 include GPL_SECTION7_ADDITIONAL_TERMS.md
 include INSTALL_WINDOWS.md
 include LICENSE
@@ -12,11 +14,12 @@ include THIRD_PARTY_NOTICES.md
 include requirements.txt
 include requirements-dev.txt
 
-recursive-include .github *.yml
+recursive-include .github *.yml *.md
 include docs/.nojekyll
 recursive-include docs *.md *.html *.css *.svg *.png
 recursive-include ambient_sounds *
-recursive-include tests *.py
+recursive-include tests *.py *.ps1
+recursive-include src/resources *.json *.svg
 recursive-include src/resources/manual *
 recursive-include src/resources/legal *
 
@@ -24,3 +27,8 @@ prune tests/_*_runtime*
 prune tests/_tmp_locales
 prune build
 prune dist
+recursive-include tools *.py *.json *.ps1 *.cpp
+include docs/supply-chain.md
+recursive-include locks *.lock *.json
+
+include docs/release-integration-state.json

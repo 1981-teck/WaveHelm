@@ -52,6 +52,8 @@ class PlaybackStateManager:
         self.event_bus = event_bus
 
         self._state: PlayerState = PlayerState.IDLE
+        self._playback_revision: int = 0
+        self._playback_epoch: int = 0
 
         # Contesto playlist
         self._playlist: list[MediaFile] = []
@@ -80,6 +82,8 @@ class PlaybackStateManager:
             self._index = 0
 
         self._current_track = current_track
+        self._playback_epoch += 1
+        self.invalidate_end_observation()
         logger.debug(
             "[PlaybackStateManager] Context set: index=%s total=%s track=%s",
             self._index,
@@ -93,6 +97,29 @@ class PlaybackStateManager:
     # State transitions
     # ------------------------------------------------------------------
     @property
+    def playback_revision(self) -> int:
+        """Version for rejecting stale completion observations, not an atomic snapshot."""
+        return self._playback_revision
+
+    def invalidate_end_observation(self) -> None:
+        """Invalidate previous end observations, including a same-file replay or seek.
+
+        Called by transport/state mutations before they publish their result.
+        This counter does not serialize concurrent native calls or replace the
+        existing UI-dispatch guard. It performs bounded work and no I/O.
+        """
+        self._playback_revision += 1
+
+    @property
+    def playback_epoch(self) -> int:
+        """Visual continuity identity; seek/pause do not start a new playback.
+
+        It never authorizes commands or completion. Replay, source/context changes,
+        stop/loading/error and same-state restarts invalidate visual carry-over.
+        """
+        return self._playback_epoch
+
+    @property
     def state(self) -> PlayerState:
         return self._state
 
@@ -103,7 +130,14 @@ class PlaybackStateManager:
             return
 
         old = self._state
+        pause_pairs = ((PlayerState.PLAYING_AUDIO, PlayerState.PAUSED_AUDIO),
+                       (PlayerState.PAUSED_AUDIO, PlayerState.PLAYING_AUDIO),
+                       (PlayerState.PLAYING_VIDEO, PlayerState.PAUSED_VIDEO),
+                       (PlayerState.PAUSED_VIDEO, PlayerState.PLAYING_VIDEO))
+        if (old, new_state) not in pause_pairs:
+            self._playback_epoch += 1
         self._state = new_state
+        self.invalidate_end_observation()
 
         if old != new_state:
             logger.info("[PlaybackStateManager] State changed: %s -> %s", old.name, new_state.name)

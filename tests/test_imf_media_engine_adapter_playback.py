@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 
+from src.video.imf_media_engine_adapter_events import _begin_source_detach
 from src.video.imf_media_engine_adapter_playback import (
     _apply_settings_core,
     _can_issue_playback_commands,
@@ -173,6 +174,14 @@ class DummyAdapter:
         self._muted = False
         self._hwnd = None
         self._source = None
+        self._source_epoch = 0
+        self._loadstart_epoch = None
+        self._ready_epoch = None
+        self._playing_epoch = None
+        self._pending_play_epoch = None
+        self._pending_source_epoch = None
+        self._pending_source_path = None
+        self._detaching_source_epoch = None
         self.com_manager_calls = []
 
     def _get_com_thread_manager(self, ensure_started=False):
@@ -186,6 +195,7 @@ for name, fn in {
     '_is_engine_initialized': _is_engine_initialized,
     '_can_issue_playback_commands': _can_issue_playback_commands,
     '_require_active_engine': _require_active_engine,
+    '_begin_source_detach': _begin_source_detach,
     'startup': startup,
     'shutdown': shutdown,
     'close': close,
@@ -287,7 +297,15 @@ def test_volume_muted_load_and_playback_helpers_fall_back_cleanly():
 
     assert adapter.load_video('clip.mp4', loop=True) is True
     assert adapter._loop_enabled is True
-    assert adapter._core.play_calls >= 1
+    assert adapter._core.load_calls == ['video.mp4', None]
+    assert adapter._core.play_calls == 0
+    assert adapter._pending_play_epoch == adapter._pending_source_epoch == 2
+
+    ready = DummyAdapter()
+    ready.load_source('ready.mp4')
+    ready._ready_epoch = ready._source_epoch
+    ready.play()
+    assert ready._core.play_calls == 1
 
     failing = DummyAdapter()
     failing._core.raise_on['load_source'] = RuntimeError('load fail')

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, TYPE_CHECKING
 
 from src.audio.audio_events import AudioEventType
 
@@ -11,6 +11,9 @@ from .engine_controller import EngineController
 from .playback_state_manager import PlaybackStateManager, PlayerState
 from .player_event_handler_video import _bind_player_event_handler_video_methods as _attach_player_event_handler_video_behavior
 from .queue_manager import QueueManager
+
+if TYPE_CHECKING:
+    from src.controller import player_controller as _player_controller
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +57,7 @@ class PlayerEventHandler:
         queue_manager: QueueManager,
         engine_controller: EngineController,
         event_bus: Any,
-        player_controller_facade: "PlayerController",
+        player_controller_facade: "_player_controller.PlayerController",
     ):
         self.state_manager = state_manager
         self.queue_manager = queue_manager
@@ -333,3 +336,8 @@ class PlayerEventHandler:
 
 
 attach_player_event_handler_behavior(PlayerEventHandler)
+
+# Publish the handler before the runtime back-reference. Import the module,
+# not its still-initializing class, so either entry order resolves real types.
+if not TYPE_CHECKING:
+    from src.controller import player_controller as _player_controller

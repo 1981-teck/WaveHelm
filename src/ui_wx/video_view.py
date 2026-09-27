@@ -5,10 +5,32 @@ from typing import Any
 
 from src.ui_wx.common import apply_colors, set_label_text
 from src.ui_wx.video_overlay_controls import ExternalVideoControlOverlay
+from src.video.wic_pipeline import wic_selected
+from src.ui_wx.wic_surface import WicSurfaceDriver
 
 logger = logging.getLogger(__name__)
 
 VIDEO_VIEW_EXCEPTIONS = (AttributeError, ImportError, RuntimeError, TypeError, ValueError)
+
+
+def _video_controller(player_controller: object | None) -> object | None:
+    """Resolve the live controller dynamically; it is created lazily by EngineController."""
+    engine = getattr(player_controller, 'engine_controller', None)
+    controller = getattr(engine, 'video_controller', None)
+    return controller if controller is not None else getattr(player_controller, 'video_controller', None)
+
+
+def _frame_pipeline(player_controller: object | None, hwnd: int):
+    controller = _video_controller(player_controller)
+    resolver = getattr(controller, 'get_frame_pipeline', None)
+    return resolver(int(hwnd)) if callable(resolver) else None
+
+
+def _frame_error(player_controller: object | None, error: BaseException) -> None:
+    controller = _video_controller(player_controller)
+    reporter = getattr(controller, 'report_frame_error', None)
+    if callable(reporter):
+        reporter(error)
 
 
 class NativeVideoSurface:
@@ -27,6 +49,7 @@ class NativeVideoSurface:
         *,
         hwnd_ready_callback: Any = None,
         surface_changed_callback: Any = None,
+        player_controller: object | None = None,
     ) -> None:
         self._wx = wx_module
         self.panel = wx_module.Panel(parent)
@@ -45,6 +68,17 @@ class NativeVideoSurface:
         apply_colors(self.panel, background='#000000', foreground='#ffffff')
         apply_colors(self._status_label, background='#000000', foreground='#ffffff')
         set_label_text(self._status_label, 'External video surface ready.')
+        self._wic_driver = (
+            WicSurfaceDriver(
+                wx_module,
+                self.panel,
+                pipeline_resolver=lambda hwnd: _frame_pipeline(player_controller, hwnd),
+                error_reporter=lambda error: _frame_error(player_controller, error),
+            )
+            if wic_selected() else None
+        )
+        if self._wic_driver is not None:
+            self._status_label.Hide()
 
     def set_hwnd_ready_callback(self, callback: Any | None) -> None:
         self._hwnd_ready_callback = callback
@@ -85,6 +119,8 @@ class NativeVideoSurface:
         apply_colors(self._status_label, background='#000000', foreground=foreground)
 
     def destroy(self) -> None:
+        if self._wic_driver is not None:
+            self._wic_driver.close()
         self._hwnd_ready_callback = None
         self._surface_changed_callback = None
         self._last_surface_signature = None
@@ -184,6 +220,7 @@ class ExternalVideoWindow:
             self.panel,
             hwnd_ready_callback=hwnd_ready_callback,
             surface_changed_callback=surface_changed_callback,
+            player_controller=player_controller,
         )
         self.control_overlay = ExternalVideoControlOverlay(
             wx_module,

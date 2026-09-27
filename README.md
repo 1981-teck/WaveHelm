@@ -20,9 +20,8 @@
 ## Demo
 
 **55-second overview of WaveHelm: Library, audio/video playback, DSP, visualizer, and themes.**
+
 [▶ Watch the 55-second WaveHelm demo](https://github.com/user-attachments/assets/5658dc35-a158-466e-846a-19f6a827077e)
-
-
 
 ### What it includes
 
@@ -50,18 +49,22 @@ Rather than remaining a small demonstration, the project evolved into a complete
 
 - **Target platform:** Windows
 - **Maintained UI runtime:** wxPython
-- **Latest public release:** [v1.0.1](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.1)
+- **Release-integration identity:** 1.0.2
+- **Integration checkpoint:** RI03 — validation pending, not yet published
+- **Latest public source release:** 1.0.1
 - **Project maturity:** active beta / public GPL source release
 - **Repository model:** source-first
-- **Development:** active
 
-The next development cycle is focused primarily on reliability and hardening rather than adding superficial features.
+The package version is prepared for 1.0.2, but RI03 is **not a publication approval**.
+The release still requires final Windows evidence, current dependency auditing,
+and reconciliation with the current GitHub branch. The release badge and links
+above refer to the public release, not to approval of this working candidate.
+See [release-integration status](docs/release-integration.md) and
+[draft 1.0.2 release notes](docs/release-notes-1.0.2.md).
 
 ## Public project website
 
-**https://1981-teck.github.io/WaveHelm/**
-
-Additional resources:
+[**WaveHelm website**](https://1981-teck.github.io/WaveHelm/)
 
 - [Privacy policy](https://1981-teck.github.io/WaveHelm/privacy-policy.html)
 - [License terms](https://1981-teck.github.io/WaveHelm/license-terms.html)
@@ -77,6 +80,7 @@ GitHub Pages is published from **main → `/docs`**.
 ![Playlist view](docs/screenshots/playlist.png)
 
 ![Favorites view](docs/screenshots/favorites.png)
+
 ### Audio shaping and ambient workflow
 
 ![Equalizer page](docs/screenshots/equalizer.png)
@@ -445,3 +449,8 @@ See [LICENSE](LICENSE) for the complete license text.
 * [AUTHORS](AUTHORS): original project authorship and attribution notes
 * [ROADMAP.md](ROADMAP.md): short-term public roadmap
 
+
+
+## Windows video backend baseline
+
+The default Windows video backend is the software frame-server/WIC path. It was qualified in the real wx application through repeated source-switch, seek, resize, presentation and resource-lifecycle checks. The legacy HWND MediaEngine renderer remains available only as an explicit diagnostic override with `WAVEHELM_VIDEO_BACKEND=legacy_hwnd`; there is no automatic fallback from WIC to HWND. See [WIC application baseline](docs/wic-application-baseline.md) for scope, evidence and remaining qualification limits.

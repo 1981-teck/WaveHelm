@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from src.model.component_database.db_core import DbCore
+from src.model.component_database.db_primitives import DbTransaction, SqlExecutor
 from src.model.component_database.playlist_mirror_journal import (
     MAX_MIRROR_ATTEMPTS,
     MAX_MIRROR_ERROR_CHARS,
@@ -20,6 +21,7 @@ from src.model.component_database.playlist_mirror_schema import (
     PlaylistMirrorSchemaError,
     read_playlist_mirror_schema_version,
 )
+from src.utils.exceptions import DatabaseError
 
 MAX_MAINTENANCE_BATCH = 64
 MAX_REPAIR_AUDIT_EVENTS = 4096
@@ -216,7 +218,7 @@ def _prepare_repair_request(
     return identifiers, actor, reason, current_time, timestamp
 
 def _load_repair_targets(
-    connection: sqlite3.Connection,
+    connection: SqlExecutor,
     playlist_ids: tuple[int, ...],
 ) -> dict[int, PlaylistMirrorInspection]:
     placeholders = ",".join("?" for _value in playlist_ids)
@@ -248,7 +250,7 @@ def _require_exhausted_targets(
         )
 
 def _rotate_repair_audit(
-    connection: sqlite3.Connection,
+    connection: DbTransaction,
     incoming_events: int,
 ) -> int:
     row = connection.execute(
@@ -258,7 +260,16 @@ def _rotate_repair_audit(
         raise PlaylistMirrorMaintenanceCorruptionError(
             "playlist mirror repair audit count is invalid"
         )
-    overflow = max(row[0] + incoming_events - MAX_REPAIR_AUDIT_EVENTS, 0)
+    current_count = row[0]
+    if current_count < 0:
+        raise PlaylistMirrorMaintenanceCorruptionError(
+            "playlist mirror repair audit count is negative"
+        )
+    if incoming_events > MAX_REPAIR_AUDIT_EVENTS:
+        raise PlaylistMirrorRepairRejectedError(
+            "playlist mirror repair batch exceeds audit capacity"
+        )
+    overflow = max(current_count + incoming_events - MAX_REPAIR_AUDIT_EVENTS, 0)
     if not overflow:
         return 0
     cursor = connection.execute(
@@ -278,7 +289,7 @@ def _rotate_repair_audit(
     return overflow
 
 def _record_rearm(
-    connection: sqlite3.Connection,
+    connection: DbTransaction,
     inspection: PlaylistMirrorInspection,
     actor: str,
     reason: str,
@@ -286,7 +297,7 @@ def _record_rearm(
     timestamp: str,
 ) -> None:
     job = inspection.job
-    connection.execute(
+    audit_cursor = connection.execute(
         f"""
         INSERT INTO {PLAYLIST_MIRROR_REPAIR_TABLE} (
             playlist_id, previous_attempt_count, previous_error,
@@ -295,6 +306,10 @@ def _record_rearm(
         """,
         (job.playlist_id, job.attempt_count, job.last_error, actor, reason, timestamp),
     )
+    if audit_cursor.rowcount != 1:
+        raise PlaylistMirrorMaintenanceCorruptionError(
+            f"playlist mirror repair audit was not recorded: {job.playlist_id}"
+        )
     cursor = connection.execute(
         f"""
         UPDATE {PLAYLIST_MIRROR_OUTBOX_TABLE}
@@ -314,23 +329,12 @@ class PlaylistMirrorMaintenance:
     def __init__(self, db_core: DbCore) -> None:
         self._db_core = db_core
 
-    def _connection(self) -> sqlite3.Connection:
-        connection = self._db_core.conn
-        if connection is None:
-            self._db_core.connect()
-            connection = self._db_core.conn
-        if connection is None:
-            raise PlaylistMirrorMaintenanceError(
-                "playlist mirror maintenance database is unavailable"
-            )
-        return connection
-
     def schema_version(self) -> int:
-        with self._db_core._db_lock:
-            try:
-                return read_playlist_mirror_schema_version(self._connection())
-            except PlaylistMirrorSchemaError as error:
-                raise PlaylistMirrorMaintenanceError(str(error)) from error
+        try:
+            with self._db_core.shared_connection() as connection:
+                return read_playlist_mirror_schema_version(connection)
+        except (DatabaseError, PlaylistMirrorSchemaError) as error:
+            raise PlaylistMirrorMaintenanceError(str(error)) from error
 
     def inspect_jobs(
         self, *, limit: int = 32, exhausted_only: bool = False
@@ -341,9 +345,8 @@ class PlaylistMirrorMaintenance:
             raise PlaylistMirrorMaintenanceError("exhausted_only must be boolean")
         where_clause = "WHERE attempt_count >= ?" if exhausted_only else ""
         parameters = (MAX_MIRROR_ATTEMPTS, limit) if exhausted_only else (limit,)
-        with self._db_core._db_lock:
-            try:
-                connection = self._connection()
+        try:
+            with self._db_core.shared_connection() as connection:
                 read_playlist_mirror_schema_version(connection)
                 rows = connection.execute(
                     f"""
@@ -356,10 +359,10 @@ class PlaylistMirrorMaintenance:
                     """,
                     parameters,
                 ).fetchall()
-            except (PlaylistMirrorSchemaError, sqlite3.Error) as error:
-                raise PlaylistMirrorMaintenanceError(
-                    f"playlist mirror inspection failed: {error}"
-                ) from error
+        except (DatabaseError, PlaylistMirrorSchemaError) as error:
+            raise PlaylistMirrorMaintenanceError(
+                f"playlist mirror inspection failed: {error}"
+            ) from error
         return tuple(_decode_inspection(row) for row in rows)
 
     def inspect_repair_events(
@@ -370,9 +373,8 @@ class PlaylistMirrorMaintenance:
             playlist_id = _validate_playlist_ids((playlist_id,))[0]
         where_clause = "WHERE playlist_id = ?" if playlist_id is not None else ""
         parameters = (playlist_id, limit) if playlist_id is not None else (limit,)
-        with self._db_core._db_lock:
-            try:
-                connection = self._connection()
+        try:
+            with self._db_core.shared_connection() as connection:
                 read_playlist_mirror_schema_version(connection)
                 rows = connection.execute(
                     f"""
@@ -384,10 +386,10 @@ class PlaylistMirrorMaintenance:
                     """,
                     parameters,
                 ).fetchall()
-            except (PlaylistMirrorSchemaError, sqlite3.Error) as error:
-                raise PlaylistMirrorMaintenanceError(
-                    f"playlist mirror repair audit lookup failed: {error}"
-                ) from error
+        except (DatabaseError, PlaylistMirrorSchemaError) as error:
+            raise PlaylistMirrorMaintenanceError(
+                f"playlist mirror repair audit lookup failed: {error}"
+            ) from error
         return tuple(_decode_repair_event(row) for row in rows)
 
     def rearm_exhausted(
@@ -407,37 +409,27 @@ class PlaylistMirrorMaintenance:
         """
         request = _prepare_repair_request(playlist_ids, actor, reason, now)
         identifiers, actor, reason, current_time, timestamp = request
-        with self._db_core._db_lock:
-            connection = self._connection()
-            if connection.in_transaction:
-                raise PlaylistMirrorMaintenanceError(
-                    "playlist mirror repair requires an idle connection"
-                )
-            try:
-                connection.execute("BEGIN IMMEDIATE")
-                read_playlist_mirror_schema_version(connection)
-                targets = _load_repair_targets(connection, identifiers)
+        try:
+            with self._db_core.shared_transaction() as transaction:
+                read_playlist_mirror_schema_version(transaction)
+                targets = _load_repair_targets(transaction, identifiers)
                 _require_exhausted_targets(identifiers, targets)
-                overflow = _rotate_repair_audit(connection, len(identifiers))
+                overflow = _rotate_repair_audit(transaction, len(identifiers))
                 for playlist_id in identifiers:
                     _record_rearm(
-                        connection,
+                        transaction,
                         targets[playlist_id],
                         actor,
                         reason,
                         current_time,
                         timestamp,
                     )
-                connection.commit()
-                return PlaylistMirrorRepairResult(identifiers, overflow)
-            except PlaylistMirrorMaintenanceError:
-                connection.rollback()
-                raise
-            except (PlaylistMirrorSchemaError, PlaylistMirrorJournalError) as error:
-                connection.rollback()
-                raise PlaylistMirrorMaintenanceCorruptionError(str(error)) from error
-            except sqlite3.Error as error:
-                connection.rollback()
-                raise PlaylistMirrorMaintenanceError(
-                    f"playlist mirror repair transaction failed: {error}"
-                ) from error
+        except PlaylistMirrorMaintenanceError:
+            raise
+        except (PlaylistMirrorSchemaError, PlaylistMirrorJournalError) as error:
+            raise PlaylistMirrorMaintenanceCorruptionError(str(error)) from error
+        except DatabaseError as error:
+            raise PlaylistMirrorMaintenanceError(
+                f"playlist mirror repair transaction failed: {error}"
+            ) from error
+        return PlaylistMirrorRepairResult(identifiers, overflow)

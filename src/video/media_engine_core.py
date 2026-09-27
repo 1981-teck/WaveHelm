@@ -12,6 +12,12 @@ from src.video.mf_base import logger
 from .media_engine_core_playback import attach_media_engine_core_playback_behavior as _attach_media_engine_core_playback_behavior
 from .media_engine_core_setup import attach_media_engine_core_setup_behavior as _attach_media_engine_core_setup_behavior
 from .media_engine_core_shared import MediaEngineError
+from .wic_pipeline import FramePipeline
+from .seek_receipt import SeekSlot, SeekReceipt
+from .media_engine_seek import read_seek_receipt
+from .media_engine_clock import read_video_clock
+from src.playback_observation import ClockObservation
+from .media_engine_timed_text_backend import attach_media_engine_timed_text_backend
 from .media_engine_core_shutdown import attach_media_engine_core_shutdown_behavior as _attach_media_engine_core_shutdown_behavior
 from .media_engine_core_vtable import attach_media_engine_core_vtable_behavior as _attach_media_engine_core_vtable_behavior
 
@@ -40,8 +46,18 @@ class MediaEngineCore:
         self._playback_hwnd: Optional[int] = None
         self._engine_generation: int = 0
         self._state_lock = threading.RLock()
+        self._seek_slot = SeekSlot()
+        self._wic_pipeline: FramePipeline | None = None
 
         logger.info("[MediaEngineCore] Istanza creata.")
+
+    def get_seek_receipt(self) -> SeekReceipt | None:
+        """Read retained command facts without dispatching native work."""
+        return read_seek_receipt(self)
+
+    def observe_progress(self) -> ClockObservation:
+        """Read the current source clock without the legacy scalar zero fallback."""
+        return read_video_clock(self)
 
     def __del__(self) -> None:
         try:
@@ -55,6 +71,7 @@ _MEDIA_ENGINE_CORE_ATTACHERS: tuple[Callable[[type["MediaEngineCore"]], None], .
     _attach_media_engine_core_setup_behavior,
     _attach_media_engine_core_vtable_behavior,
     _attach_media_engine_core_playback_behavior,
+    attach_media_engine_timed_text_backend,
     _attach_media_engine_core_shutdown_behavior,
 )
 

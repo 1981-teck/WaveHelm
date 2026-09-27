@@ -2,26 +2,32 @@ from __future__ import annotations
 
 import importlib
 import logging
-from pathlib import Path
-import os
 from typing import Any
 
 from src.audio.audio_event_models import AudioEventType
 from src.model.media_file import MediaFile, MediaType
+from src.ui_wx.collection_view_support import (
+    canonical_media_path,
+    filter_library_media,
+    select_file_paths,
+    select_folder_path,
+    selected_items,
+    sort_library_media,
+)
 from src.ui_wx.common import (
     WX_CALLBACK_EXCEPTIONS,
-    apply_colors,
-    autosize_choice_control,
-    create_flow_sizer,
-    get_localized_text,
-    get_theme_colors,
-    persist_listctrl_column_widths,
+    format_duration,
+    refresh_now_playing_highlight,
+    set_view_feedback,
+    subscribe_event,
     register_callback,
-    restore_listctrl_column_widths,
     set_label_text,
-    set_listctrl_column_label,
-    unregister_callback,
 )
+from src.ui_wx.view_presentation_support import (
+    release_view_lifecycle,
+)
+
+from src.ui_wx.library_view_layout import LibraryViewLayout
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +35,7 @@ LIBRARY_VIEW_EXCEPTIONS = (AttributeError, OSError, RuntimeError, TypeError, Val
 _DIALOG_CANCELLED = {0, -1}
 
 
-class LibraryView:
+class LibraryView(LibraryViewLayout):
     """wx-based library browser and import view.
 
     Edge cases handled deterministically:
@@ -37,6 +43,9 @@ class LibraryView:
     2. Selection can become stale after filtering, sorting, or external library updates, so playback/removal resolves paths from the current rendered snapshot.
     3. Partial controller capabilities degrade to bounded no-op feedback rather than leaving the page in an inconsistent state.
     """
+
+    FEEDBACK_EVENT_TYPE = AudioEventType.FEEDBACK_MESSAGE
+    _set_feedback = set_view_feedback
 
     COLUMN_WIDTHS_SETTING_KEY = 'ui_library_column_widths'
 
@@ -100,67 +109,6 @@ class LibraryView:
     def _import_wx_module() -> Any:
         return importlib.import_module('wx')
 
-    def _build_ui(self) -> None:
-        wx = self._wx
-        root = wx.BoxSizer(wx.VERTICAL)
-        self.title_label = wx.StaticText(self.panel, label='')
-        root.Add(self.title_label, 0, wx.ALL | wx.EXPAND, 8)
-        root.Add(self._build_search_row(), 0, wx.ALL | wx.EXPAND, 8)
-        root.Add(self._build_actions_row(), 0, wx.ALL | wx.EXPAND, 8)
-        self.table = self._build_table()
-        root.Add(self.table, 1, wx.ALL | wx.EXPAND, 8)
-        self.status_label = wx.StaticText(self.panel, label='')
-        self.feedback_label = wx.StaticText(self.panel, label='')
-        root.Add(self.status_label, 0, wx.ALL | wx.EXPAND, 8)
-        root.Add(self.feedback_label, 0, wx.ALL | wx.EXPAND, 8)
-        self.panel.SetSizer(root)
-
-    def _build_search_row(self) -> Any:
-        wx = self._wx
-        row = wx.BoxSizer(wx.HORIZONTAL)
-        self.search_label = wx.StaticText(self.panel, label='')
-        self.search_text = wx.TextCtrl(self.panel, value='')
-        self.filter_label = wx.StaticText(self.panel, label='')
-        self.filter_choice = wx.Choice(self.panel)
-        self.sort_label = wx.StaticText(self.panel, label='')
-        self.sort_choice = wx.Choice(self.panel)
-        for widget, proportion in (
-            (self.search_label, 0),
-            (self.search_text, 1),
-            (self.filter_label, 0),
-            (self.filter_choice, 0),
-            (self.sort_label, 0),
-            (self.sort_choice, 0),
-        ):
-            flags = wx.ALL | (wx.EXPAND if proportion else wx.ALIGN_CENTER_VERTICAL)
-            row.Add(widget, proportion, flags, 6)
-        return row
-
-    def _build_actions_row(self) -> Any:
-        wx = self._wx
-        row = create_flow_sizer(wx)
-        self.add_files_button = wx.Button(self.panel, label='')
-        self.add_folder_button = wx.Button(self.panel, label='')
-        self.refresh_button = wx.Button(self.panel, label='')
-        self.play_button = wx.Button(self.panel, label='')
-        self.favorite_button = wx.Button(self.panel, label='')
-        self.remove_button = wx.Button(self.panel, label='')
-        for button in (
-            self.add_files_button,
-            self.add_folder_button,
-            self.refresh_button,
-            self.play_button,
-            self.favorite_button,
-            self.remove_button,
-        ):
-            row.Add(button, 0, wx.ALL | wx.EXPAND, 6)
-        return row
-
-    def _build_table(self) -> Any:
-        list_ctrl = self._wx.ListCtrl(self.panel, style=getattr(self._wx, 'LC_REPORT', 0))
-        for index, (name, key) in enumerate(self.COLUMN_KEYS):
-            list_ctrl.InsertColumn(index, self._t(key, name.title()))
-        return list_ctrl
 
     def _bind_events(self) -> None:
         self.search_text.Bind(getattr(self._wx, 'EVT_TEXT', ''), self._on_search_changed)
@@ -199,19 +147,16 @@ class LibraryView:
         self._subscribe(AudioEventType.PLAYER_STATE_CHANGED, self._on_player_state_changed)
 
     def _subscribe(self, event_type: AudioEventType, callback: Any) -> None:
-        subscribe = getattr(self.event_bus, 'subscribe', None)
-        if not callable(subscribe):
-            return
-        try:
-            subscription = subscribe(event_type, callback)
-        except LIBRARY_VIEW_EXCEPTIONS:
-            logger.debug('LibraryView subscription failed for %s.', event_type, exc_info=True)
-            return
-        self._subscriptions.append((event_type, subscription))
+        subscribe_event(
+            self.event_bus,
+            self._subscriptions,
+            event_type,
+            callback,
+            exceptions=LIBRARY_VIEW_EXCEPTIONS,
+            logger=logger,
+            view_name='LibraryView',
+        )
 
-    def _t(self, key: str, default: str | None = None, **kwargs: Any) -> str:
-        fallback = default if default is not None else key
-        return get_localized_text(self.localization_manager, key, fallback, **kwargs)
 
     def _selected_filter(self) -> MediaType:
         index = self.filter_choice.GetSelection()
@@ -225,106 +170,14 @@ class LibraryView:
             return self.SORT_OPTIONS[index][0]
         return 'title'
 
-    def update_localization(self, *_: Any) -> None:
-        set_label_text(self.title_label, self._t('nav_library', 'Library'))
-        set_label_text(self.search_label, self._t('library_search_label', 'Search'))
-        set_label_text(self.filter_label, self._t('library_filter_label', 'Filter'))
-        set_label_text(self.sort_label, self._t('library_sort_label', 'Sort'))
-        self._set_choice_items()
-        self._set_button_labels()
-        self._set_column_labels()
-        self._restore_column_widths()
-        self._update_status_label()
-
-    def _set_choice_items(self) -> None:
-        current_filter = self._selected_filter()
-        current_sort = self._selected_sort()
-        self._filter_values = [name for name, _kind, _key in self.FILTER_OPTIONS]
-        filter_labels = [self._t(key, name.title()) for name, _kind, key in self.FILTER_OPTIONS]
-        self.filter_choice.SetItems(filter_labels)
-        autosize_choice_control(self.filter_choice, filter_labels)
-        filter_index = next((idx for idx, (_name, kind, _key) in enumerate(self.FILTER_OPTIONS) if kind == current_filter), 0)
-        self.filter_choice.SetSelection(filter_index)
-        self._sort_values = [name for name, _key in self.SORT_OPTIONS]
-        sort_labels = [self._t(key, name.title()) for name, key in self.SORT_OPTIONS]
-        self.sort_choice.SetItems(sort_labels)
-        autosize_choice_control(self.sort_choice, sort_labels)
-        sort_index = next((idx for idx, (name, _key) in enumerate(self.SORT_OPTIONS) if name == current_sort), 0)
-        self.sort_choice.SetSelection(sort_index)
-
-    def _set_button_labels(self) -> None:
-        """Apply localized action labels using keys already populated across the shipped locale bundles.
-
-        Edge cases handled deterministically:
-        1. Legacy library-specific button keys may be missing from locale files, so we prefer shared action keys with existing translations.
-        2. Favorites has no dedicated action key in the locale bundles, so we fall back to the localized module label instead of leaving the button stuck in English.
-        3. Localization refresh can happen repeatedly at runtime, so labels are reassigned idempotently without relying on constructor defaults.
-        """
-        set_label_text(self.add_files_button, self._t('add_files_button', 'Add files'))
-        set_label_text(self.add_folder_button, self._t('add_folder_button', 'Add folder'))
-        set_label_text(self.refresh_button, self._t('btn_refresh', 'Refresh'))
-        set_label_text(self.play_button, self._t('tooltip_play', 'Play selected'))
-        set_label_text(self.favorite_button, self._t('nav_favorites', 'Favorites'))
-        set_label_text(self.remove_button, self._t('tooltip_remove', 'Remove selected'))
-
-    def _set_column_labels(self) -> None:
-        columns = getattr(self.table, 'columns', None)
-        for index, (name, key) in enumerate(self.COLUMN_KEYS):
-            label = self._t(key, name.title())
-            set_listctrl_column_label(self.table, index, label)
-
-    def _restore_column_widths(self) -> None:
-        restore_listctrl_column_widths(
-            self.table,
-            self.settings_manager,
-            self.COLUMN_WIDTHS_SETTING_KEY,
-            len(self.COLUMN_KEYS),
-        )
-
-    def _persist_column_widths(self) -> None:
-        persist_listctrl_column_widths(
-            self.table,
-            self.settings_manager,
-            self.COLUMN_WIDTHS_SETTING_KEY,
-            len(self.COLUMN_KEYS),
-        )
-
-    def _on_table_column_resized(self, _event: Any) -> None:
-        self._persist_column_widths()
-
-
-    def update_theme_colors(self, *_: Any) -> None:
-        colors = get_theme_colors(self.theme_manager)
-        background = colors.get('panel_bg') or colors.get('bg_color')
-        foreground = colors.get('text_color')
-        accent = colors.get('button_color') or background
-        apply_colors(self.panel, background=background, foreground=foreground)
-        for widget in (
-            self.title_label,
-            self.search_label,
-            self.search_text,
-            self.filter_label,
-            self.filter_choice,
-            self.sort_label,
-            self.sort_choice,
-            self.table,
-            self.status_label,
-            self.feedback_label,
-        ):
-            apply_colors(widget, background=background, foreground=foreground)
-        for button in (
-            self.add_files_button,
-            self.add_folder_button,
-            self.refresh_button,
-            self.play_button,
-            self.favorite_button,
-            self.remove_button,
-        ):
-            apply_colors(button, background=accent, foreground=foreground)
-        self._refresh_now_playing_highlight(colors)
 
     def refresh_library(self) -> None:
-        self._displayed_media = self._sorted_media(self._filtered_media(self._all_media()))
+        filtered = filter_library_media(
+            self._all_media(),
+            query=self.search_text.GetValue() or '',
+            selected_filter=self._selected_filter(),
+        )
+        self._displayed_media = sort_library_media(filtered, sort_name=self._selected_sort())
         self._populate_rows()
         self._update_status_label()
 
@@ -339,43 +192,6 @@ class LibraryView:
             return []
         return [item for item in items if isinstance(item, MediaFile)]
 
-    def _filtered_media(self, media_items: list[MediaFile]) -> list[MediaFile]:
-        query = (self.search_text.GetValue() or '').strip().lower()
-        selected_filter = self._selected_filter()
-        filtered: list[MediaFile] = []
-        for media in media_items:
-            if selected_filter is not MediaType.ALL and getattr(media, 'media_type', MediaType.UNKNOWN) is not selected_filter:
-                continue
-            blob = self._search_blob(media)
-            if query and query not in blob:
-                continue
-            filtered.append(media)
-        return filtered
-
-    def _search_blob(self, media: MediaFile) -> str:
-        metadata = dict(getattr(media, 'metadata', {}) or {})
-        parts = [
-            getattr(media, 'title', '') or '',
-            metadata.get('artist', '') or '',
-            metadata.get('album', '') or '',
-            getattr(media, 'path', '') or '',
-        ]
-        return ' '.join(str(part).lower() for part in parts if part)
-
-    def _sorted_media(self, media_items: list[MediaFile]) -> list[MediaFile]:
-        sort_name = self._selected_sort()
-        return sorted(media_items, key=lambda media: self._sort_key(media, sort_name))
-
-    def _sort_key(self, media: MediaFile, sort_name: str) -> Any:
-        metadata = dict(getattr(media, 'metadata', {}) or {})
-        if sort_name == 'artist':
-            return (str(metadata.get('artist', '')).lower(), str(media.title).lower())
-        if sort_name == 'album':
-            return (str(metadata.get('album', '')).lower(), str(media.title).lower())
-        if sort_name == 'duration':
-            return (float(getattr(media, 'duration', 0.0) or 0.0), str(media.title).lower())
-        return str(getattr(media, 'title', '') or '').lower()
-
     def _populate_rows(self) -> None:
         self.table.DeleteAllItems()
         for row_index, media in enumerate(self._displayed_media):
@@ -387,111 +203,26 @@ class LibraryView:
 
     @staticmethod
     def _canonical_path(path: str) -> str:
-        value = str(path or '').strip()
-        if not value:
-            return ''
-        if value.startswith(('http://', 'https://', 'rtsp://', 'rtmp://')):
-            return value
-        try:
-            return os.path.normcase(os.path.abspath(os.path.normpath(value)))
-        except LIBRARY_VIEW_EXCEPTIONS:
-            return value
+        return canonical_media_path(path, exceptions=LIBRARY_VIEW_EXCEPTIONS)
 
-    @staticmethod
-    def _lighten_color(color: str | None, *, blend: float = 0.28) -> str | None:
-        value = str(color or '').strip()
-        if len(value) != 7 or not value.startswith('#'):
-            return None
-        try:
-            red = int(value[1:3], 16)
-            green = int(value[3:5], 16)
-            blue = int(value[5:7], 16)
-        except ValueError:
-            return None
-        ratio = min(0.9, max(0.0, float(blend)))
-        red = min(255, int(round(red + (255 - red) * ratio)))
-        green = min(255, int(round(green + (255 - green) * ratio)))
-        blue = min(255, int(round(blue + (255 - blue) * ratio)))
-        return f'#{red:02x}{green:02x}{blue:02x}'
-
-    def _now_playing_row_color(self, colors: dict[str, str] | None = None) -> str | None:
-        palette = dict(colors or get_theme_colors(self.theme_manager))
-        accent = palette.get('selection_bg') or palette.get('button_color')
-        return self._lighten_color(accent) or accent
 
     def _refresh_now_playing_highlight(self, colors: dict[str, str] | None = None) -> None:
-        item_count_getter = getattr(self.table, 'GetItemCount', None)
-        set_background = getattr(self.table, 'SetItemBackgroundColour', None)
-        if not callable(item_count_getter) or not callable(set_background):
-            return
-        palette = dict(colors or get_theme_colors(self.theme_manager))
-        default_background = palette.get('panel_bg') or palette.get('bg_color')
-        highlight_background = self._now_playing_row_color(palette)
-        current_key = self._canonical_path(self._current_track_path)
-        try:
-            item_count = max(0, int(item_count_getter() or 0))
-        except LIBRARY_VIEW_EXCEPTIONS:
-            return
-        for row_index in range(item_count):
-            row_background = default_background
-            if current_key and row_index < len(self._displayed_media):
-                media_path = getattr(self._displayed_media[row_index], 'path', '') or ''
-                if self._canonical_path(media_path) == current_key:
-                    row_background = highlight_background or default_background
-            if row_background:
-                try:
-                    set_background(row_index, row_background)
-                except LIBRARY_VIEW_EXCEPTIONS:
-                    logger.debug('Unable to refresh LibraryView row highlight.', exc_info=True)
-                    return
-        refresh = getattr(self.table, 'Refresh', None)
-        if callable(refresh):
-            try:
-                refresh()
-            except LIBRARY_VIEW_EXCEPTIONS:
-                logger.debug('Unable to refresh LibraryView table after row highlight update.', exc_info=True)
+        refresh_now_playing_highlight(
+            self.table,
+            self._displayed_media,
+            self._current_track_path,
+            self._canonical_path,
+            self.theme_manager,
+            colors=colors,
+            exceptions=LIBRARY_VIEW_EXCEPTIONS,
+            logger=logger,
+            view_name='LibraryView',
+            table_name='table',
+        )
 
-    def _row_values(self, media: MediaFile) -> list[str]:
-        metadata = dict(getattr(media, 'metadata', {}) or {})
-        media_type = getattr(media, 'media_type', MediaType.UNKNOWN)
-        return [
-            getattr(media, 'title', '') or '',
-            str(metadata.get('artist', '') or ''),
-            str(metadata.get('album', '') or ''),
-            self._format_duration(float(getattr(media, 'duration', 0.0) or 0.0)),
-            self._media_type_text(media_type),
-            getattr(media, 'path', '') or '',
-        ]
-
-    def _format_duration(self, seconds: float) -> str:
-        total_seconds = max(0, int(seconds or 0))
-        minutes, remaining = divmod(total_seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours > 0:
-            return f'{hours:02d}:{minutes:02d}:{remaining:02d}'
-        return f'{minutes:02d}:{remaining:02d}'
-
-    def _media_type_text(self, media_type: MediaType) -> str:
-        if media_type is MediaType.AUDIO:
-            return self._t('library_type_audio', 'Audio')
-        if media_type is MediaType.VIDEO:
-            return self._t('library_type_video', 'Video')
-        return self._t('library_type_unknown', 'Unknown')
-
-    def _selected_indices(self) -> list[int]:
-        selected: list[int] = []
-        index = self.table.GetFirstSelected()
-        while index != -1:
-            selected.append(index)
-            index = self.table.GetNextSelected(index)
-        return selected
 
     def get_selected_media_files(self) -> list[MediaFile]:
-        selected: list[MediaFile] = []
-        for index in self._selected_indices():
-            if 0 <= index < len(self._displayed_media):
-                selected.append(self._displayed_media[index])
-        return selected
+        return selected_items(self.table, self._displayed_media)
 
     def _on_search_changed(self, _event: Any | None = None) -> None:
         self.refresh_library()
@@ -615,45 +346,29 @@ class LibraryView:
         self._import_paths([folder])
 
     def _select_file_paths(self) -> list[str]:
-        file_dialog_cls = getattr(self._wx, 'FileDialog', None)
-        if file_dialog_cls is None:
-            self._set_feedback(self._t('library_dialog_unavailable', 'Import dialog is not available on this runtime.'), 'orange')
-            return []
-        dialog = file_dialog_cls(self.panel, message=self._t('library_add_files_button', 'Add files'))
-        try:
-            if dialog.ShowModal() in _DIALOG_CANCELLED:
-                return []
-            getter = getattr(dialog, 'GetPaths', None)
-            if callable(getter):
-                return [str(path) for path in getter() if path]
-            single_getter = getattr(dialog, 'GetPath', None)
-            if callable(single_getter):
-                path = single_getter()
-                return [str(path)] if path else []
-            return []
-        finally:
-            destroy = getattr(dialog, 'Destroy', None)
-            if callable(destroy):
-                destroy()
+        return select_file_paths(
+            self._wx,
+            self.panel,
+            message=self._t('library_add_files_button', 'Add files'),
+            cancelled_results=_DIALOG_CANCELLED,
+            unavailable=lambda: self._set_feedback(
+                self._t('library_dialog_unavailable', 'Import dialog is not available on this runtime.'),
+                'orange',
+            ),
+        )
 
     def _select_folder_path(self) -> str:
-        dir_dialog_cls = getattr(self._wx, 'DirDialog', None)
-        if dir_dialog_cls is None:
-            self._set_feedback(self._t('library_dialog_unavailable', 'Import dialog is not available on this runtime.'), 'orange')
-            return ''
-        dialog = dir_dialog_cls(self.panel, message=self._t('library_add_folder_button', 'Add folder'))
-        try:
-            if dialog.ShowModal() in _DIALOG_CANCELLED:
-                return ''
-            getter = getattr(dialog, 'GetPath', None)
-            if not callable(getter):
-                return ''
-            value = getter()
-            return str(value) if value else ''
-        finally:
-            destroy = getattr(dialog, 'Destroy', None)
-            if callable(destroy):
-                destroy()
+        return select_folder_path(
+            self._wx,
+            self.panel,
+            message=self._t('library_add_folder_button', 'Add folder'),
+            cancelled_results=_DIALOG_CANCELLED,
+            unavailable=lambda: self._set_feedback(
+                self._t('library_dialog_unavailable', 'Import dialog is not available on this runtime.'),
+                'orange',
+            ),
+            allow_paths_fallback=False,
+        )
 
     def _import_paths(self, paths: list[str]) -> None:
         adder = getattr(self.library_controller, 'add_media_files', None)
@@ -674,11 +389,6 @@ class LibraryView:
         total = len(self._all_media())
         set_label_text(self.status_label, self._t('library_status', 'Visible items: {count} / {total}', count=count, total=total))
 
-    def _set_feedback(self, message: str, color: str) -> None:
-        set_label_text(self.feedback_label, message)
-        publish = getattr(self.event_bus, 'publish', None)
-        if callable(publish):
-            publish(AudioEventType.FEEDBACK_MESSAGE, {'message': message, 'color': color})
 
     def _on_library_updated(self, _payload: Any) -> None:
         self.refresh_library()
@@ -693,7 +403,7 @@ class LibraryView:
             if getattr(media, 'path', '') != path:
                 continue
             media.duration = duration
-            self.table.SetItem(index, 3, self._format_duration(duration))
+            self.table.SetItem(index, 3, format_duration(duration, include_hours=True))
             return
         self.refresh_library()
 
@@ -721,27 +431,16 @@ class LibraryView:
         3. Persistence failures must not block shutdown, so the shared helper contains toolkit-specific exceptions.
         """
         self._persist_column_widths()
-        for event_type, subscription in tuple(self._subscriptions):
-            unsubscribe = getattr(self.event_bus, 'unsubscribe', None)
-            if callable(unsubscribe):
-                try:
-                    unsubscribe(event_type, subscription=subscription)
-                except LIBRARY_VIEW_EXCEPTIONS:
-                    logger.debug('Unable to unsubscribe wx LibraryView.', exc_info=True)
-        self._subscriptions.clear()
-        unregister_callback(
-            self.localization_manager,
-            'unregister_language_change_callback',
-            self.update_localization,
+        release_view_lifecycle(
+            event_bus=self.event_bus,
+            subscriptions=self._subscriptions,
+            exceptions=LIBRARY_VIEW_EXCEPTIONS,
+            localization_manager=self.localization_manager,
+            localization_callback=self.update_localization,
+            theme_manager=self.theme_manager,
+            theme_callback=self.update_theme_colors,
             logger=logger,
-            message='Unable to unregister wx LibraryView language callback.',
-        )
-        unregister_callback(
-            self.theme_manager,
-            'unregister_theme_change_callback',
-            self.update_theme_colors,
-            logger=logger,
-            message='Unable to unregister wx LibraryView theme callback.',
+            view_name='LibraryView',
         )
 
     def show(self) -> None:

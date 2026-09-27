@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Optional
 
 from src.audio.audio_events import AudioEventType
 from src.controller.playlist_controller_storage import PlaylistStorageError

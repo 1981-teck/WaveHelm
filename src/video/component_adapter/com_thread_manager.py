@@ -14,6 +14,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
+from .com_thread_manager_api import ComThreadApi, ResponsePort
 from typing import Any, Callable, Optional, Tuple
 
 from src.video.mf_base import logger
@@ -158,10 +159,10 @@ class _ComTask:
     fn: Callable[..., Any]
     args: Tuple[Any, ...]
     kwargs: dict
-    response_q: "queue.Queue[Any]"
+    response_q: ResponsePort
 
 
-class ComThreadManager:
+class ComThreadManager(ComThreadApi):
     """
     Gestisce un thread COM (STA) dedicato.
 
@@ -193,134 +194,6 @@ class ComThreadManager:
     # Public API
     # -------------------------
 
-    def start(self) -> None:
-        """Avvia il thread COM e attende la sua inizializzazione (idempotente)."""
-        with self._lock:
-            if self._shutdown_requested:
-                logger.warning(
-                    "[%s] start() ignorato: shutdown già richiesto; non riavvio il thread.",
-                    self.thread_name,
-                )
-                return
-
-            if self._com_thread and self._com_thread.is_alive():
-                return
-
-            # reset stato start
-            self._stop_event.clear()
-            self._com_thread_id_event.clear()
-            self._com_ready_event.clear()
-            self._com_init_error = None
-            self._com_thread_id = None
-
-            self._com_thread = threading.Thread(
-                target=self._com_thread_main,
-                name=self.thread_name,
-                daemon=True,
-            )
-            self._com_thread.start()
-
-        # Attende almeno l'assegnazione del thread id
-        if not self._com_thread_id_event.wait(timeout=5.0):
-            self._stop_event.set()
-            if self._com_thread and self._com_thread.is_alive():
-                self._com_thread.join(timeout=2.0)
-            raise MediaEngineError("Il thread COM non è partito entro il timeout (thread id non disponibile).")
-
-        # Attende readiness completa (COM init + MFStartup + wake event)
-        if not self._com_ready_event.wait(timeout=5.0):
-            self._stop_event.set()
-            if self._com_thread and self._com_thread.is_alive():
-                self._wake_com_thread()
-                self._com_thread.join(timeout=2.0)
-            raise MediaEngineError("Il thread COM non è pronto entro il timeout (inizializzazione incompleta).")
-
-        if self._com_init_error is not None:
-            raise MediaEngineError(f"Inizializzazione thread COM fallita: {self._com_init_error}") from self._com_init_error
-
-        if self._com_thread_id is None:
-            raise MediaEngineError("L'ID del thread COM non è disponibile dopo l'avvio.")
-
-        logger.info("[%s] Thread avviato con successo (id=%s)", self.thread_name, self._com_thread_id)
-
-    def shutdown(self) -> None:
-        """Arresta il thread COM in modo pulito (idempotente)."""
-        with self._lock:
-            if self._shutdown_requested:
-                return
-            self._shutdown_requested = True
-
-        self._stop_event.set()
-        self._wake_com_thread()
-
-        # Rifiuta eventuali task pendenti per sbloccare chi attende risultati
-        self._reject_pending_tasks("shutdown requested")
-
-        t = self._com_thread
-        if t and t.is_alive():
-            logger.info("[%s] In attesa della terminazione del thread...", self.thread_name)
-            t.join(timeout=5.0)
-            if t.is_alive():
-                logger.warning("[%s] Il thread non è terminato correttamente.", self.thread_name)
-            else:
-                logger.info("[%s] Thread terminato.", self.thread_name)
-
-        with self._lock:
-            self._com_thread = None
-            self._com_thread_id = None
-            self._com_thread_id_event.clear()
-            self._com_ready_event.clear()
-            self._com_thread_wakeup = None
-
-    def post_to_com_thread(self, name: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
-        """Invia una funzione al thread COM per esecuzione asincrona (fire-and-forget)."""
-        if self._stop_event.is_set() or self._shutdown_requested:
-            logger.debug("[%s] Ignoro task COM '%s': thread in shutdown.", self.thread_name, name)
-            return
-
-        t = self._com_thread
-        if not t or not t.is_alive():
-            logger.warning("[%s] Thread COM non attivo, impossibile inviare il task '%s'", self.thread_name, name)
-            return
-
-        dummy_response_q: "queue.Queue[Any]" = queue.Queue(maxsize=1)
-        self._task_queue.put(_ComTask(name=name, fn=fn, args=args, kwargs=kwargs, response_q=dummy_response_q))
-        self._wake_com_thread()
-
-    def call_on_com_thread(self, name: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        """
-        Esegue una funzione sul thread COM, attendendo il risultato.
-        Se chiamato dallo stesso thread COM, esegue la funzione direttamente.
-        """
-        if self._is_on_com_thread():
-            return fn(*args, **kwargs)
-
-        if self._stop_event.is_set() or self._shutdown_requested:
-            raise MediaEngineError("Il thread COM sta chiudendo; impossibile eseguire task sincroni.")
-
-        t = self._com_thread
-        if not t or not t.is_alive():
-            raise MediaEngineError("Il thread COM non è attivo.")
-
-        response_q: "queue.Queue[Any]" = queue.Queue(maxsize=1)
-        self._task_queue.put(_ComTask(name=name, fn=fn, args=args, kwargs=kwargs, response_q=response_q))
-        self._wake_com_thread()
-
-        t0 = time.perf_counter()
-        try:
-            result = response_q.get(timeout=self.com_task_timeout)
-        except queue.Empty as exc:
-            raise MediaEngineTimeoutError(
-                f"Task COM '{name}' ha superato il timeout di {self.com_task_timeout:.3f}s"
-            ) from exc
-
-        dt = time.perf_counter() - t0
-        if dt >= 0.250:
-            logger.info("[%s] COM task '%s' completed in %.3fs", self.thread_name, name, dt)
-
-        if isinstance(result, Exception):
-            raise result from result
-        return result
 
     # -------------------------
     # Internals
@@ -462,7 +335,6 @@ class ComThreadManager:
 
         # Drenaggio finale
         self._drain_tasks_com_thread()
-
 
 
 _COM_THREAD_MANAGER_RUNTIME_METHODS: tuple[tuple[str, Callable[..., Any]], ...] = (

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict
 
@@ -9,7 +10,7 @@ if TYPE_CHECKING:
     from src.audio.audio_event_bus import AudioEventBus
     from src.audio.audio_engine import AudioEngine
     from src.model.localization_manager import LocalizationManager
-    from src.model.setting_manager import JsonValue, SettingsManager
+    from src.model.setting_manager import SettingsManager
     from src.model.theme_manager import ThemeManager
 
 from src.audio.audio_events import AudioEventType
@@ -29,35 +30,70 @@ from src.controller.settings_controller_cleanup import (
 from src.controller.settings_controller_runtime import (
     SETTINGS_CONTROLLER_RUNTIME_BINDINGS,
 )
+from src.model.localization_manager import PreparedLocale
+from src.model.settings_schema import (
+    JsonValue,
+    SettingsSnapshot,
+    read_settings_document,
+)
 from src.utils.exceptions import SettingsError
 
 logger = logging.getLogger(__name__)
-
 LOCALIZATION_EXCEPTIONS = (AttributeError, KeyError, TypeError, ValueError)
 EVENT_BUS_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError)
 SETTINGS_MANAGER_EXCEPTIONS = (
-    AttributeError,
-    KeyError,
-    TypeError,
-    ValueError,
-    RuntimeError,
-    OSError,
-    SettingsError,
+    AttributeError, KeyError, TypeError, ValueError, RuntimeError, OSError, SettingsError,
 )
 FILE_EXCEPTIONS = (IOError, OSError)
 JSON_EXCEPTIONS = (json.JSONDecodeError, TypeError, ValueError)
 RUNTIME_EXCEPTIONS = (
-    AttributeError,
-    TypeError,
-    ValueError,
-    RuntimeError,
-    OSError,
-    SettingsError,
+    AttributeError, TypeError, ValueError, RuntimeError, OSError, SettingsError,
 )
 CLEANUP_EXCEPTIONS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
 LOG_HANDLER_EXCEPTIONS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
-MAX_SETTINGS_IMPORT_BYTES = 1_048_576
 
+def _read_boolean_setting(
+    settings: Mapping[str, JsonValue], key: str, default: bool
+) -> bool:
+    value = settings.get(key, default)
+    return value if type(value) is bool else default
+
+def _read_integer_setting(
+    settings: Mapping[str, JsonValue], key: str, default: int
+) -> int:
+    value = settings.get(key, default)
+    return value if type(value) is int else default
+
+def _read_text_setting(
+    settings: Mapping[str, JsonValue], key: str, default: str
+) -> str:
+    value = settings.get(key, default)
+    return value if isinstance(value, str) else default
+
+def _validate_localization_binding(
+    settings_manager: object, localization_manager: object
+) -> None:
+    """Prevent a real settings manager from using a different locale boundary."""
+    managed_localization = getattr(settings_manager, "localization_manager", None)
+    if managed_localization is None:
+        return
+    if managed_localization is not localization_manager:
+        raise ValueError("Settings and controller localization managers must be identical.")
+    if not callable(getattr(localization_manager, "prepare_language", None)):
+        raise TypeError("The production localization manager lacks prepared-locale support.")
+
+def _prepare_locale_change(manager: object, value: object) -> PreparedLocale | None:
+    """Use the transactional locale API while retaining an explicit legacy shim."""
+    prepare = getattr(manager, "prepare_language", None)
+    if prepare is None:
+        logger.debug("Legacy localization manager lacks prepared-locale support.")
+        return None
+    if not callable(prepare):
+        raise TypeError("Localization prepare_language must be callable.")
+    prepared = prepare(value)
+    if not isinstance(prepared, PreparedLocale):
+        raise TypeError("Localization prepare_language returned an invalid snapshot.")
+    return prepared
 
 class SettingsController:
     """Controller per la gestione delle impostazioni dell'applicazione."""
@@ -76,6 +112,7 @@ class SettingsController:
         audio_engine: "AudioEngine",
         video_player: object | None = None,
     ) -> None:
+        _validate_localization_binding(settings_manager, localization_manager)
         self.settings_manager = settings_manager
         self.localization_manager = localization_manager
         self.theme_manager = theme_manager
@@ -163,55 +200,67 @@ class SettingsController:
                 exc_info=True,
             )
 
-    def _apply_volume_from_settings(self, settings: Dict[str, Any]) -> None:
-        try:
-            volume = float(settings.get("volume", 70)) / 100.0
-        except (AttributeError, TypeError, ValueError):
-            volume = 0.7
+    def _apply_volume_from_settings(self, settings: SettingsSnapshot) -> None:
+        volume = _read_integer_setting(settings, "volume", 70) / 100.0
         self._set_engine_volume_safe(volume)
         self._set_video_volume_safe(volume)
 
-    def _apply_language_from_settings(self, settings: Dict[str, Any]) -> None:
+    def _apply_language_from_settings(self, settings: SettingsSnapshot) -> None:
         try:
-            language = str(settings.get("language", "en"))
+            language = _read_text_setting(settings, "language", "en")
             self.localization_manager.set_language(language)
             self._publish_language_changed()
         except RUNTIME_EXCEPTIONS as error:
             logger.debug("Language runtime update skipped: %s", error, exc_info=True)
 
-    def _apply_theme_from_settings(self, settings: Dict[str, Any]) -> None:
+    def _apply_theme_from_settings(self, settings: SettingsSnapshot) -> None:
         try:
-            theme = settings.get("theme", "System")
-            primary = settings.get("primary_color", "blue")
+            theme = _read_text_setting(settings, "theme", "System")
+            primary = _read_text_setting(settings, "primary_color", "blue")
             self.theme_manager.set_theme(theme, primary)
         except RUNTIME_EXCEPTIONS as error:
             logger.debug("Theme runtime update skipped: %s", error, exc_info=True)
 
-    def _apply_video_runtime_from_settings(self, settings: Dict[str, Any]) -> None:
+    def _apply_video_runtime_from_settings(self, settings: SettingsSnapshot) -> None:
         if not self.video_player:
             return
 
         try:
-            hw_enabled = bool(settings.get("video_hw_accel_enabled", True))
+            hw_enabled = _read_boolean_setting(
+                settings, "video_hw_accel_enabled", True
+            )
             if hasattr(self.video_player, "set_hw_accel"):
                 self.video_player.set_hw_accel(hw_enabled)
 
             if hasattr(self.video_player, "configure_video_runtime"):
                 self.video_player.configure_video_runtime(
-                    drop_late_frames=bool(settings.get("video_drop_late_frames", True)),
-                    frame_queue_size=int(settings.get("video_frame_queue_size", 10)),
-                    decode_threads=int(settings.get("video_decode_threads", 0)),
-                    fast_seek=bool(settings.get("video_fast_seek", True)),
-                    resize_quality_high=bool(
-                        settings.get("video_resize_quality_high", False)
+                    drop_late_frames=_read_boolean_setting(
+                        settings, "video_drop_late_frames", True
+                    ),
+                    frame_queue_size=_read_integer_setting(
+                        settings, "video_frame_queue_size", 10
+                    ),
+                    decode_threads=_read_integer_setting(
+                        settings, "video_decode_threads", 0
+                    ),
+                    fast_seek=_read_boolean_setting(settings, "video_fast_seek", True),
+                    resize_quality_high=_read_boolean_setting(
+                        settings, "video_resize_quality_high", False
                     ),
                 )
         except RUNTIME_EXCEPTIONS as error:
             logger.debug("Video runtime update skipped: %s", error, exc_info=True)
 
-    def set_setting(self, key: str, value: "JsonValue") -> None:
+    def set_setting(self, key: str, value: JsonValue) -> None:
         try:
+            prepared_locale: PreparedLocale | None = None
+            if key == "language":
+                prepared_locale = _prepare_locale_change(self.localization_manager, value)
+                if prepared_locale is not None:
+                    value = prepared_locale.code
             persisted_value = self.settings_manager.set_setting(key, value)
+            if prepared_locale is not None:
+                self.localization_manager.activate_prepared_language(prepared_locale)
             self._publish_event(
                 AudioEventType.SETTINGS_UPDATED,
                 {"key": key, "value": persisted_value},
@@ -220,7 +269,7 @@ class SettingsController:
         except SETTINGS_MANAGER_EXCEPTIONS as error:
             self._handle_error(error, "error_setting_value", key=key)
 
-    def get_all_settings(self) -> Dict[str, Any]:
+    def get_all_settings(self) -> SettingsSnapshot:
         return self.settings_manager.get_all_settings()
 
     def export_settings(self, file_path: str) -> None:
@@ -245,14 +294,17 @@ class SettingsController:
 
         try:
             path = Path(file_path)
-            if path.stat().st_size > MAX_SETTINGS_IMPORT_BYTES:
-                raise ValueError("settings import exceeds the 1 MiB limit")
-            with path.open("r", encoding="utf-8") as handle:
-                settings = json.load(handle)
-            if not isinstance(settings, dict):
-                raise ValueError("settings import must be a JSON object")
-
+            settings = read_settings_document(path)
+            prepared_locale: PreparedLocale | None = None
+            if "language" in settings:
+                prepared_locale = _prepare_locale_change(
+                    self.localization_manager, settings["language"]
+                )
+                if prepared_locale is not None:
+                    settings["language"] = prepared_locale.code
             result = self.settings_manager.apply_imported_settings(settings)
+            if prepared_locale is not None:
+                self.localization_manager.activate_prepared_language(prepared_locale)
             self._load_initial_settings()
             self._publish_event(
                 AudioEventType.SETTINGS_BATCH_UPDATED,
@@ -292,11 +344,6 @@ class SettingsController:
         except SETTINGS_MANAGER_EXCEPTIONS as error:
             self._handle_error(error, "error_resetting_settings")
 
-
-
-
-
-
 _SETTINGS_CONTROLLER_CLEANUP_METHODS: tuple[tuple[str, Any], ...] = (
     ("get_app_data_dir", get_app_data_dir),
     ("get_processed_audio_dir", get_processed_audio_dir),
@@ -310,8 +357,6 @@ _SETTINGS_CONTROLLER_CLEANUP_METHODS: tuple[tuple[str, Any], ...] = (
     ("clear_processed_audio_cache", clear_processed_audio_cache),
     ("clear_runtime_artifacts", clear_runtime_artifacts),
 )
-
-
 
 def _attach_settings_controller_binding_group(
     controller_cls: type[SettingsController],
@@ -327,7 +372,6 @@ def _attach_settings_controller_binding_group(
             raise TypeError(f"Invalid settings controller binding: {attribute_name}")
         setattr(controller_cls, attribute_name, method)
         seen_names.add(attribute_name)
-
 
 def install_settings_controller_cleanup_behavior(
     controller_cls: type[SettingsController],
@@ -350,7 +394,6 @@ def install_settings_controller_cleanup_behavior(
     setattr(controller_cls, '_settings_controller_cleanup_behavior_attached', True)
     return controller_cls
 
-
 def install_settings_controller_runtime_behavior(
     controller_cls: type[SettingsController],
 ) -> type[SettingsController]:
@@ -364,12 +407,10 @@ def install_settings_controller_runtime_behavior(
     setattr(controller_cls, '_settings_controller_runtime_behavior_attached', True)
     return controller_cls
 
-
 _SETTINGS_CONTROLLER_ATTACHERS: tuple[tuple[str, Any], ...] = (
     ("runtime", install_settings_controller_runtime_behavior),
     ("cleanup", install_settings_controller_cleanup_behavior),
 )
-
 
 def install_settings_controller_behavior(
     controller_cls: type[SettingsController],
@@ -394,19 +435,16 @@ def install_settings_controller_behavior(
     setattr(controller_cls, '_settings_controller_behavior_attached', True)
     return controller_cls
 
-
 def attach_settings_controller_cleanup_behavior(
     controller_cls: type[SettingsController],
 ) -> type[SettingsController]:
     """Backward-compatible shim that delegates to the neutral cleanup installer."""
     return install_settings_controller_cleanup_behavior(controller_cls)
 
-
 def attach_settings_controller_behavior(
     controller_cls: type[SettingsController],
 ) -> type[SettingsController]:
     """Backward-compatible shim that delegates to the neutral installer."""
     return install_settings_controller_behavior(controller_cls)
-
 
 install_settings_controller_behavior(SettingsController)

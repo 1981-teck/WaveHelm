@@ -15,7 +15,6 @@ from src.audio.audio_events import AudioEventBus
 from src.audio.effects import EffectsEngine
 from src.audio.equalizer import Equalizer
 from src.audio.analysis import AudioAnalyzer
-from src.audio.audio_engine_shared import VIDEO_EXTS
 from src.audio import audio_engine_helpers as helpers
 from src.audio import audio_engine_dsp as dsp
 from src.audio import audio_engine_playback as playback
@@ -140,6 +139,8 @@ AudioEngine.play = playback.play
 AudioEngine.pause = playback.pause
 AudioEngine.resume = playback.resume
 AudioEngine.stop = playback.stop
+AudioEngine.poll_end = playback.poll_end
+AudioEngine.observe_progress = playback.observe_progress
 AudioEngine.is_playing = playback.is_playing
 AudioEngine.is_paused = playback.is_paused
 AudioEngine.get_length = playback.get_length

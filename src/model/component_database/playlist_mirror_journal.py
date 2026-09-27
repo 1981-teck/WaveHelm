@@ -9,10 +9,12 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from src.model.component_database.db_core import DbCore
+from src.model.component_database.db_primitives import DbTransaction, SqlExecutor
 from src.model.component_database.playlist_mirror_schema import (
     PlaylistMirrorSchemaError,
     ensure_playlist_mirror_schema,
 )
+from src.utils.exceptions import DatabaseError
 
 MirrorOperation = Literal["sync", "delete"]
 
@@ -25,18 +27,14 @@ MAX_RECOVERY_BATCH = 256
 RETRY_BASE_SECONDS = 1.0
 RETRY_MAX_SECONDS = 300.0
 
-
 class PlaylistMirrorJournalError(RuntimeError):
     """Base error for durable playlist mirror journal failures."""
-
 
 class PlaylistMirrorJournalCorruptionError(PlaylistMirrorJournalError):
     """Raised when a persisted outbox row violates the typed journal schema."""
 
-
 class PlaylistMirrorJournalCapacityError(PlaylistMirrorJournalError):
     """Raised when bounded journal capacity would be exceeded."""
-
 
 @dataclass(frozen=True, slots=True)
 class PlaylistMirrorJob:
@@ -50,16 +48,13 @@ class PlaylistMirrorJob:
     next_attempt_at: float
     last_error: str
 
-
 def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
-
 
 def _validate_playlist_id(playlist_id: int) -> int:
     if isinstance(playlist_id, bool) or not isinstance(playlist_id, int) or playlist_id < 1:
         raise PlaylistMirrorJournalError("playlist ID must be a positive integer")
     return playlist_id
-
 
 def _validate_time(value: float, label: str) -> float:
     try:
@@ -69,7 +64,6 @@ def _validate_time(value: float, label: str) -> float:
     if not math.isfinite(result) or result < 0:
         raise PlaylistMirrorJournalError(f"{label} must be finite and non-negative")
     return result
-
 
 def _validate_name(name: str, *, allow_empty: bool = False) -> str:
     if not isinstance(name, str):
@@ -81,7 +75,6 @@ def _validate_name(name: str, *, allow_empty: bool = False) -> str:
     if "\x00" in name:
         raise PlaylistMirrorJournalError("playlist mirror name contains a NUL character")
     return name
-
 
 def _decode_stale_names(raw_value: str) -> tuple[str, ...]:
     try:
@@ -105,27 +98,42 @@ def _decode_stale_names(raw_value: str) -> tuple[str, ...]:
             seen.add(name)
     return tuple(names)
 
-
 def _encode_stale_names(names: tuple[str, ...]) -> str:
     return json.dumps(names, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
+def _decode_count_row(
+    row: sqlite3.Row | tuple[object, ...] | None, label: str
+) -> int:
+    values = () if row is None else tuple(row)
+    value = values[0] if len(values) == 1 else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise PlaylistMirrorJournalCorruptionError(
+            f"{label} is not a stored non-negative integer")
+    return value
+
+def _decode_playlist_id_row(row: sqlite3.Row | tuple[object, ...]) -> int:
+    values = tuple(row)
+    try:
+        return _validate_playlist_id(values[0] if len(values) == 1 else None)
+    except PlaylistMirrorJournalError as error:
+        raise PlaylistMirrorJournalCorruptionError(
+            "playlist mirror ID row is invalid") from error
 
 def _read_existing_job(
-    connection: sqlite3.Connection, playlist_id: int
+    connection: SqlExecutor, playlist_id: int
 ) -> tuple[MirrorOperation, str, tuple[str, ...]] | None:
     row = connection.execute(
-        "SELECT operation, playlist_name, stale_names "
-        "FROM playlist_mirror_outbox WHERE playlist_id = ?",
+        """
+        SELECT playlist_id, operation, playlist_name, stale_names,
+               attempt_count, next_attempt_at, last_error
+        FROM playlist_mirror_outbox WHERE playlist_id = ?
+        """,
         (playlist_id,),
     ).fetchone()
     if row is None:
         return None
-    operation = str(row[0])
-    if operation not in ("sync", "delete"):
-        raise PlaylistMirrorJournalCorruptionError("unknown playlist mirror operation")
-    playlist_name = _validate_name(str(row[1]))
-    return operation, playlist_name, _decode_stale_names(str(row[2]))
-
+    job = decode_playlist_mirror_job(row)
+    return job.operation, job.playlist_name, job.stale_names
 
 def _merge_stale_names(
     existing: tuple[str, ...], candidates: tuple[str | None, ...], current_name: str
@@ -144,17 +152,17 @@ def _merge_stale_names(
             raise PlaylistMirrorJournalCapacityError("too many stale playlist mirror names")
     return tuple(merged)
 
-
 def _upsert_job(
-    connection: sqlite3.Connection,
+    connection: SqlExecutor,
     playlist_id: int,
     operation: MirrorOperation,
     playlist_name: str,
     stale_names: tuple[str, ...],
 ) -> None:
-    existing_count = int(
-        connection.execute("SELECT COUNT(*) FROM playlist_mirror_outbox").fetchone()[0]
-    )
+    count_row = connection.execute(
+        "SELECT COUNT(*) FROM playlist_mirror_outbox"
+    ).fetchone()
+    existing_count = _decode_count_row(count_row, "playlist mirror journal count")
     existing_row = connection.execute(
         "SELECT 1 FROM playlist_mirror_outbox WHERE playlist_id = ?", (playlist_id,)
     ).fetchone()
@@ -187,9 +195,8 @@ def _upsert_job(
         ),
     )
 
-
 def enqueue_playlist_mirror_sync(
-    connection: sqlite3.Connection,
+    connection: SqlExecutor,
     playlist_id: int,
     playlist_name: str,
     *,
@@ -213,9 +220,8 @@ def enqueue_playlist_mirror_sync(
     merged = _merge_stale_names(stale_names, previous_candidates, playlist_name)
     _upsert_job(connection, playlist_id, "sync", playlist_name, merged)
 
-
 def enqueue_playlist_mirror_delete(
-    connection: sqlite3.Connection, playlist_id: int, playlist_name: str
+    connection: SqlExecutor, playlist_id: int, playlist_name: str
 ) -> None:
     """Coalesce a delete intent inside the caller's SQLite transaction."""
     playlist_id = _validate_playlist_id(playlist_id)
@@ -228,7 +234,6 @@ def enqueue_playlist_mirror_delete(
         candidates = (existing_name,)
     merged = _merge_stale_names(stale_names, candidates, playlist_name)
     _upsert_job(connection, playlist_id, "delete", playlist_name, merged)
-
 
 def decode_playlist_mirror_job(
     row: sqlite3.Row | tuple[object, ...],
@@ -280,9 +285,8 @@ def decode_playlist_mirror_job(
         last_error=error,
     )
 
-
 class PlaylistMirrorJournal:
-    """Bounded SQLite outbox used to reconcile canonical playlists and JSON mirrors."""
+    """Bounded SQLite outbox used to reconcile playlists and JSON mirrors."""
 
     _decode_job = staticmethod(decode_playlist_mirror_job)
 
@@ -290,95 +294,84 @@ class PlaylistMirrorJournal:
         self._db_core = db_core
         self.ensure_schema()
 
-    def _connection(self) -> sqlite3.Connection:
-        connection = self._db_core.conn
-        if connection is None:
-            self._db_core.connect()
-            connection = self._db_core.conn
-        if connection is None:
-            raise PlaylistMirrorJournalError("playlist mirror journal database is unavailable")
-        return connection
-
     def ensure_schema(self) -> None:
-        with self._db_core._db_lock:
-            connection = self._connection()
-            try:
+        try:
+            with self._db_core.shared_connection() as connection:
                 ensure_playlist_mirror_schema(connection)
-            except PlaylistMirrorSchemaError as error:
-                raise PlaylistMirrorJournalError(
-                    f"playlist mirror journal schema initialization failed: {error}"
-                ) from error
+        except (DatabaseError, PlaylistMirrorSchemaError) as error:
+            message = f"playlist mirror journal schema initialization failed: {error}"
+            raise PlaylistMirrorJournalError(message) from error
 
     def fetch_due(
         self, *, limit: int = 32, now: float | None = None
     ) -> tuple[PlaylistMirrorJob, ...]:
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_RECOVERY_BATCH:
-            raise PlaylistMirrorJournalError("recovery batch limit is outside the allowed range")
+        invalid = isinstance(limit, bool) or not isinstance(limit, int)
+        if invalid or not 1 <= limit <= MAX_RECOVERY_BATCH:
+            raise PlaylistMirrorJournalError(
+                "recovery batch limit is outside the allowed range"
+            )
         current_time = _validate_time(time.time() if now is None else now, "current time")
-        with self._db_core._db_lock:
-            connection = self._connection()
-            try:
+        try:
+            with self._db_core.shared_connection() as connection:
                 rows = connection.execute(
                     """
                     SELECT playlist_id, operation, playlist_name, stale_names,
                            attempt_count, next_attempt_at, last_error
                     FROM playlist_mirror_outbox
                     WHERE attempt_count < ? AND next_attempt_at <= ?
-                    ORDER BY updated_at, playlist_id
-                    LIMIT ?
+                    ORDER BY updated_at, playlist_id LIMIT ?
                     """,
                     (MAX_MIRROR_ATTEMPTS, current_time, limit),
                 ).fetchall()
-            except sqlite3.Error as error:
-                raise PlaylistMirrorJournalError(
-                    f"playlist mirror recovery query failed: {error}"
-                ) from error
+        except DatabaseError as error:
+            message = f"playlist mirror recovery query failed: {error}"
+            raise PlaylistMirrorJournalError(message) from error
         return tuple(decode_playlist_mirror_job(row) for row in rows)
 
     def pending_playlist_ids(self) -> frozenset[int]:
-        with self._db_core._db_lock:
-            connection = self._connection()
-            try:
+        try:
+            with self._db_core.shared_connection() as connection:
                 rows = connection.execute(
                     "SELECT playlist_id FROM playlist_mirror_outbox"
                 ).fetchall()
-            except sqlite3.Error as error:
-                raise PlaylistMirrorJournalError(
-                    f"playlist mirror pending query failed: {error}"
-                ) from error
-        try:
-            return frozenset(_validate_playlist_id(int(row[0])) for row in rows)
-        except (PlaylistMirrorJournalError, TypeError, ValueError, OverflowError) as error:
-            raise PlaylistMirrorJournalCorruptionError(str(error)) from error
+        except DatabaseError as error:
+            raise PlaylistMirrorJournalError(
+                f"playlist mirror pending query failed: {error}"
+            ) from error
+        return frozenset(_decode_playlist_id_row(row) for row in rows)
 
     def exhausted_count(self) -> int:
-        with self._db_core._db_lock:
-            connection = self._connection()
-            try:
+        try:
+            with self._db_core.shared_connection() as connection:
                 row = connection.execute(
-                    "SELECT COUNT(*) FROM playlist_mirror_outbox WHERE attempt_count >= ?",
+                    "SELECT COUNT(*) FROM playlist_mirror_outbox "
+                    "WHERE attempt_count >= ?",
                     (MAX_MIRROR_ATTEMPTS,),
                 ).fetchone()
-            except sqlite3.Error as error:
-                raise PlaylistMirrorJournalError(
-                    f"playlist mirror exhaustion query failed: {error}"
-                ) from error
-        return int(row[0])
+        except DatabaseError as error:
+            raise PlaylistMirrorJournalError(
+                f"playlist mirror exhaustion query failed: {error}"
+            ) from error
+        return _decode_count_row(row, "playlist mirror exhausted count")
 
     def acknowledge(self, playlist_id: int) -> None:
         playlist_id = _validate_playlist_id(playlist_id)
-        with self._db_core._db_lock:
-            connection = self._connection()
-            try:
-                connection.execute(
-                    "DELETE FROM playlist_mirror_outbox WHERE playlist_id = ?", (playlist_id,)
+        try:
+            with self._db_core.shared_transaction() as transaction:
+                cursor = transaction.execute(
+                    "DELETE FROM playlist_mirror_outbox WHERE playlist_id = ?",
+                    (playlist_id,),
                 )
-                connection.commit()
-            except sqlite3.Error as error:
-                connection.rollback()
-                raise PlaylistMirrorJournalError(
-                    f"playlist mirror acknowledgement failed: {error}"
-                ) from error
+                if cursor.rowcount not in (0, 1):
+                    raise PlaylistMirrorJournalCorruptionError(
+                        "playlist mirror acknowledgement affected multiple rows"
+                    )
+        except PlaylistMirrorJournalError:
+            raise
+        except DatabaseError as error:
+            raise PlaylistMirrorJournalError(
+                f"playlist mirror acknowledgement failed: {error}"
+            ) from error
 
     def record_failure(
         self, playlist_id: int, error: Exception, *, now: float | None = None
@@ -387,54 +380,61 @@ class PlaylistMirrorJournal:
         current_time = _validate_time(time.time() if now is None else now, "current time")
         raw_message = f"{type(error).__name__}: {error}"
         message = raw_message.encode("utf-8", "backslashreplace").decode("utf-8")
-        message = message[:MAX_MIRROR_ERROR_CHARS]
-        with self._db_core._db_lock:
-            connection = self._connection()
-            try:
-                row = connection.execute(
-                    "SELECT attempt_count FROM playlist_mirror_outbox WHERE playlist_id = ?",
-                    (playlist_id,),
-                ).fetchone()
-                if row is None:
-                    return False
-                current_attempt = int(row[0])
-                if not 0 <= current_attempt <= MAX_MIRROR_ATTEMPTS:
-                    raise PlaylistMirrorJournalCorruptionError(
-                        "invalid playlist mirror attempt count")
-                attempt_count = min(current_attempt + 1, MAX_MIRROR_ATTEMPTS)
-                delay = min(
-                    RETRY_BASE_SECONDS * (2 ** max(attempt_count - 1, 0)),
-                    RETRY_MAX_SECONDS,
+        try:
+            with self._db_core.shared_transaction() as transaction:
+                return self._record_failure(
+                    transaction, playlist_id, current_time,
+                    message[:MAX_MIRROR_ERROR_CHARS],
                 )
-                next_attempt_at = _validate_time(
-                    current_time + delay, "next retry time")
-                connection.execute(
-                    """
-                    UPDATE playlist_mirror_outbox
-                    SET attempt_count = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
-                    WHERE playlist_id = ?
-                    """,
-                    (
-                        attempt_count,
-                        next_attempt_at,
-                        message,
-                        _utc_timestamp(),
-                        playlist_id,
-                    ),
-                )
-                connection.commit()
-            except sqlite3.Error as journal_error:
-                connection.rollback()
-                raise PlaylistMirrorJournalError(
-                    f"playlist mirror failure state could not be persisted: {journal_error}"
-                ) from journal_error
+        except PlaylistMirrorJournalError:
+            raise
+        except DatabaseError as journal_error:
+            message = f"playlist mirror failure state could not be persisted: {journal_error}"
+            raise PlaylistMirrorJournalError(message) from journal_error
+
+    @staticmethod
+    def _record_failure(
+        transaction: DbTransaction,
+        playlist_id: int,
+        current_time: float,
+        message: str,
+    ) -> bool:
+        row = transaction.execute(
+            "SELECT attempt_count FROM playlist_mirror_outbox WHERE playlist_id = ?",
+            (playlist_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        current_attempt = _decode_count_row(row, "playlist mirror attempt count")
+        if current_attempt > MAX_MIRROR_ATTEMPTS:
+            raise PlaylistMirrorJournalCorruptionError(
+                "invalid playlist mirror attempt count"
+            )
+        attempt_count = min(current_attempt + 1, MAX_MIRROR_ATTEMPTS)
+        delay = min(
+            RETRY_BASE_SECONDS * (2 ** max(attempt_count - 1, 0)),
+            RETRY_MAX_SECONDS,
+        )
+        next_attempt_at = _validate_time(current_time + delay, "next retry time")
+        cursor = transaction.execute(
+            """
+            UPDATE playlist_mirror_outbox
+            SET attempt_count = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
+            WHERE playlist_id = ? AND attempt_count = ?
+            """,
+            (attempt_count, next_attempt_at, message, _utc_timestamp(),
+             playlist_id, current_attempt),
+        )
+        if cursor.rowcount != 1:
+            raise PlaylistMirrorJournalCorruptionError(
+                "playlist mirror failure state changed during update"
+            )
         return True
 
     def get_job(self, playlist_id: int) -> PlaylistMirrorJob | None:
         playlist_id = _validate_playlist_id(playlist_id)
-        with self._db_core._db_lock:
-            connection = self._connection()
-            try:
+        try:
+            with self._db_core.shared_connection() as connection:
                 row = connection.execute(
                     """
                     SELECT playlist_id, operation, playlist_name, stale_names,
@@ -443,8 +443,8 @@ class PlaylistMirrorJournal:
                     """,
                     (playlist_id,),
                 ).fetchone()
-            except sqlite3.Error as error:
-                raise PlaylistMirrorJournalError(
-                    f"playlist mirror lookup failed: {error}"
-                ) from error
+        except DatabaseError as error:
+            raise PlaylistMirrorJournalError(
+                f"playlist mirror lookup failed: {error}"
+            ) from error
         return None if row is None else decode_playlist_mirror_job(row)

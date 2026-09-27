@@ -1,16 +1,22 @@
 from __future__ import annotations
+
 import json
 import logging
 import os
-from typing import List, Dict, Any, Optional
 from datetime import datetime
+from collections.abc import Mapping
+from typing import List, Optional
 
 from src.model.component_database.db_core import DbCore
-from src.utils.exceptions import IntegrityError, NotFoundError, DatabaseError
+from src.utils.exceptions import DatabaseError, IntegrityError, NotFoundError
 
 logger = logging.getLogger(__name__)
 
 FAVORITES_PATH_EXCEPTIONS = (AttributeError, OSError, TypeError, ValueError)
+_PATH_MATCH_TERM = (
+    "LOWER(REPLACE(path, '\\', '/')) = "
+    "LOWER(REPLACE(?, '\\', '/'))"
+)
 
 
 def _normalize_storage_path(path: str) -> str:
@@ -61,7 +67,7 @@ class FavoritesManager:
         if not candidates:
             return []
 
-        where_clause = " OR ".join(["LOWER(path) = LOWER(?)"] * len(candidates))
+        where_clause = " OR ".join([_PATH_MATCH_TERM] * len(candidates))
         rows = self.db_core._execute_query(
             f"SELECT path FROM favorites WHERE {where_clause}",
             tuple(candidates),
@@ -75,51 +81,95 @@ class FavoritesManager:
         title: str,
         media_type: str,
         duration: float,
-        metadata: Optional[Dict[str, Any]] = None,
-    ):
+        metadata: Optional[Mapping[str, object]] = None,
+    ) -> None:
+        """Insert one favorite and verify the exact write result.
+
+        Edge cases:
+            1. A path-equivalent favorite already exists before the write.
+            2. SQLite rejects the insert because of a concurrent unique conflict.
+            3. A write reports an unexpected zero or multi-row result.
+        """
         path = _normalize_storage_path(path)
-        if self._find_matching_paths(path):
-            raise IntegrityError(f"Favorite already exists: {path}")
-        query = """INSERT INTO favorites (path, title, media_type, duration, metadata, added_at) VALUES (?, ?, ?, ?, ?, ?)"""
+        candidates = _build_path_candidates(path)
         timestamp = datetime.now().isoformat()
-        try:
-            self.db_core._execute_query(
-                query,
-                (
-                    path,
-                    title,
-                    media_type,
-                    duration,
-                    json.dumps(metadata) if metadata else None,
-                    timestamp,
-                ),
+        values = (
+            path,
+            title,
+            media_type,
+            duration,
+            json.dumps(metadata) if metadata else None,
+            timestamp,
+        )
+        if candidates:
+            where_clause = " OR ".join([_PATH_MATCH_TERM] * len(candidates))
+            query = (
+                "INSERT INTO favorites "
+                "(path, title, media_type, duration, metadata, added_at) "
+                "SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS "
+                f"(SELECT 1 FROM favorites WHERE {where_clause})"
             )
-            logger.info(f"Favorite added: {title}")
-        except IntegrityError:
-            raise IntegrityError(f"Favorite already exists: {path}")
-        except DatabaseError as e:
-            raise DatabaseError(f"Error adding favorite: {title}, error: {e}")
-
-    def remove_favorite(self, path: str):
-        matching_paths = self._find_matching_paths(path)
-        if not matching_paths:
-            raise NotFoundError(f"Favorite not found: {path}")
-
-        placeholders = ", ".join(["?"] * len(matching_paths))
-        query = f"DELETE FROM favorites WHERE path IN ({placeholders})"
+            params = values + tuple(candidates)
+        else:
+            query = (
+                "INSERT INTO favorites "
+                "(path, title, media_type, duration, metadata, added_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)"
+            )
+            params = values
         try:
-            self.db_core._execute_query(query, tuple(matching_paths))
-            if self.db_core._last_changes() > 0:
-                logger.info(
-                    "Favorite removed: %s (%s row(s))", path, len(matching_paths)
-                )
-            else:
-                raise NotFoundError(f"Favorite not found: {path}")
-        except DatabaseError as e:
-            raise DatabaseError(f"Error removing favorite: {path}, error: {e}")
+            result = self.db_core._execute_write(query, params)
+        except IntegrityError as error:
+            raise IntegrityError(
+                "Favorite insert violates a database integrity constraint.",
+                details=str(error),
+            ) from error
+        except DatabaseError as error:
+            raise DatabaseError(
+                f"Error adding favorite: {title}", details=str(error)
+            ) from error
+        if result.rowcount == 0:
+            raise IntegrityError(f"Favorite already exists: {path}")
+        if result.rowcount != 1:
+            raise DatabaseError(
+                "Favorite insert affected an unexpected number of rows.",
+                details=f"expected=1; actual={result.rowcount}; path={path}",
+            )
+        logger.info("Favorite added: %s", title)
 
-    def get_favorites(self) -> List[Dict[str, Any]]:
-        query = """SELECT id, path, title, media_type, duration, metadata, added_at FROM favorites ORDER BY added_at DESC"""
+    def remove_favorite(self, path: str) -> None:
+        """Delete all known path variants using the direct cursor rowcount.
+
+        Edge cases:
+            1. No equivalent stored path exists.
+            2. Another writer removes every candidate before this delete commits.
+            3. Legacy separator or case variants require deleting multiple rows.
+        """
+        candidates = _build_path_candidates(path)
+        if not candidates:
+            raise NotFoundError(f"Favorite not found: {path}")
+        where_clause = " OR ".join([_PATH_MATCH_TERM] * len(candidates))
+        query = f"DELETE FROM favorites WHERE {where_clause}"
+        try:
+            result = self.db_core._execute_write(query, tuple(candidates))
+        except IntegrityError as error:
+            raise IntegrityError(
+                "Favorite delete violates a database integrity constraint.",
+                details=str(error),
+            ) from error
+        except DatabaseError as error:
+            raise DatabaseError(
+                f"Error removing favorite: {path}", details=str(error)
+            ) from error
+        if result.rowcount == 0:
+            raise NotFoundError(f"Favorite not found: {path}")
+        logger.info("Favorite removed: %s (%s row(s))", path, result.rowcount)
+
+    def get_favorites(self) -> List[dict[str, object]]:
+        query = (
+            "SELECT id, path, title, media_type, duration, metadata, added_at "
+            "FROM favorites ORDER BY added_at DESC"
+        )
         rows = self.db_core._execute_query(query, fetch_all=True)
         items = []
         if rows:
@@ -135,7 +185,7 @@ class FavoritesManager:
                 items.append(item)
         return items
 
-    def get_all_favorite_items(self) -> List[Dict[str, Any]]:
+    def get_all_favorite_items(self) -> List[dict[str, object]]:
         return self.get_favorites()
 
     def is_favorite(self, path: str) -> bool:

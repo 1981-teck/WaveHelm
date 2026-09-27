@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools==82.0.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "wavehelm"
-version = "1.0.1"
+version = "1.0.2"
 description = "Windows-targeted desktop media player with a wxPython UI, DSP audio, ambient playback, and a Media Foundation video pipeline."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -45,7 +45,7 @@ include = ["src*"]
 exclude = ["src.ui", "src.ui.*"]
 
 [tool.setuptools.package-data]
-src = ["config/*.json", "locales/*.json", "resources/manual/*.html", "resources/manual/*.json", "resources/legal/*.md", "resources/legal/*.json", "resources/legal/licenses/*.txt"]
+src = ["resources/*.json", "resources/icons/*.svg", "config/*.json", "locales/*.json", "resources/manual/*.html", "resources/manual/*.json", "resources/legal/*.md", "resources/legal/*.json", "resources/legal/licenses/*.txt"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }

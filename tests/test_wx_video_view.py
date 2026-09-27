@@ -8,9 +8,16 @@ import pytest
 from src.audio.audio_event_models import AudioEventType
 from src.model.media_file import MediaType
 from src.ui_wx.main_view import MainView
+from src.ui_wx import video_view
 from src.ui_wx.video_view import ExternalVideoWindow, NativeVideoSurface, VideoView
+from src.video import wic_pipeline
 from tests.wx_fakes import FakeApp, FakeCloseEvent, FakeWxModule
 
+
+# Edges: Windows WIC default must not leak here; WIC regression clears it; monkeypatch restores env.
+@pytest.fixture(autouse=True)
+def _generic_wx_tests_use_legacy_backend(monkeypatch):
+    monkeypatch.setenv('WAVEHELM_VIDEO_BACKEND', 'legacy_hwnd')
 
 class DummyLocalizationManager:
     def __init__(self) -> None:
@@ -158,6 +165,16 @@ def test_wx_video_view_stub_fails_fast_after_external_only_migration():
     assert VideoView.external_only_mode is True
     with pytest.raises(RuntimeError, match='removed from the app'):
         VideoView()
+
+
+def test_windows_unset_backend_wires_wic_surface_driver(monkeypatch):
+    """Edges: env absent, Windows default, and controlled WIC driver wiring without real GDI."""
+    created: list[object] = []
+    monkeypatch.delenv('WAVEHELM_VIDEO_BACKEND', raising=False)
+    monkeypatch.setattr(wic_pipeline.os, 'name', 'nt')
+    monkeypatch.setattr(video_view, 'WicSurfaceDriver', lambda *args, **kwargs: created.append(object()) or created[-1])
+    surface = NativeVideoSurface(FakeWxModule, FakeWxModule.Panel(None))
+    assert surface._wic_driver is created[0]
 
 
 def test_wx_native_video_surface_notifies_ready_and_deduplicates_surface_changes(monkeypatch):

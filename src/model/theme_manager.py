@@ -1,183 +1,328 @@
 from __future__ import annotations
 
-"""
-Toolkit-agnostic ThemeManager for the maintained wxPython runtime.
-"""
+"""Toolkit-agnostic theme management for the maintained wxPython runtime."""
 
-import json
+from collections.abc import Callable
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Protocol, TypeAlias
 
 from src.audio.audio_events import AudioEventType
+from src.utils.bounded_json import (
+    BoundedJsonError,
+    JsonLimits,
+    read_json_file,
+    serialize_json_bytes,
+)
 from src.model.theme_manager_builtins import BUILTIN_COLOR_THEME_NAMES, get_builtin_themes
+from src.model.theme_schema import (
+    ThemeCatalog,
+    ThemeColors,
+    clone_theme_catalog,
+    clone_theme_colors,
+    extract_custom_theme_catalog,
+    normalize_runtime_theme_catalog,
+    normalize_theme_name,
+    safe_theme_log,
+    validate_builtin_theme_catalog,
+    validate_color_theme_names,
+    validate_custom_theme_catalog,
+    validate_theme_color,
+    validate_theme_color_key,
+)
+from src.utils.durable_io import DurabilityStatus, SerializedCommitGate, write_bytes_atomic_durable
+from src.utils.exceptions import SettingsError
 from src.utils.helpers import get_app_data_path
 
 logger = logging.getLogger(__name__)
+MAX_THEME_DOCUMENT_BYTES = 512 * 1024
+THEME_JSON_LIMITS = JsonLimits(
+    max_bytes=MAX_THEME_DOCUMENT_BYTES,
+    max_depth=4,
+    max_nodes=5_000,
+    max_container_items=128,
+    max_key_chars=256,
+    max_key_bytes=1_024,
+    max_string_chars=256,
+    max_string_bytes=1_024,
+    max_total_text_chars=262_144,
+    max_total_text_bytes=MAX_THEME_DOCUMENT_BYTES,
+)
+ThemeMutation: TypeAlias = Callable[[ThemeCatalog], None]
+FILE_EXCEPTIONS = (
+    BoundedJsonError,
+    OSError,
+    RecursionError,
+    TypeError,
+    UnicodeError,
+    ValueError,
+)
 
-LOCALIZATION_EXCEPTIONS = (AttributeError, KeyError, TypeError, ValueError)
-FILE_EXCEPTIONS = (OSError, TypeError, ValueError, json.JSONDecodeError)
-CALLBACK_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError)
-EVENT_BUS_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError)
-FORMAT_EXCEPTIONS = (KeyError, IndexError, ValueError)
+SCHEMA_EXCEPTIONS = (RecursionError, TypeError, UnicodeError, ValueError)
+
+
+def _log(level: int, message: str, *args: object, exc_info: bool = False) -> None:
+    safe_theme_log(logger, level, message, *args, exc_info=exc_info)
+
+
+class LocalizationProvider(Protocol):
+    def get_text(self, key: str, **kwargs: object) -> str:
+        """Return localized text for *key*."""
+
+
+class EventPublisher(Protocol):
+    def publish(self, event_type: AudioEventType, payload: object) -> object:
+        """Publish one event payload."""
 
 
 class ThemeManager:
+    """Manage trusted built-ins and schema-valid persisted custom themes."""
+
     def __init__(
         self,
-        localization_manager: Optional[Any] = None,
-        event_bus: Optional[Any] = None,
-        initial_mode: str = 'dark',
-        initial_color_theme: str = 'blue',
-        default_mode: str = 'dark',
+        localization_manager: LocalizationProvider | None = None,
+        event_bus: EventPublisher | None = None,
+        initial_mode: str = "dark",
+        initial_color_theme: str = "blue",
+        default_mode: str = "dark",
     ) -> None:
         self.localization_manager = localization_manager
         self.event_bus = event_bus
-
-        self.mode = (initial_mode or 'dark').lower()
-        self.color_theme = (initial_color_theme or 'blue').lower()
-        self.default_mode = (default_mode or 'dark').lower()
-
-        app_data_dir = Path(get_app_data_path())
-        self.custom_themes_file = app_data_dir / 'custom_themes.json'
-
-        self.themes: Dict[str, Dict[str, str]] = get_builtin_themes()
+        self.custom_themes_file = Path(get_app_data_path()) / "custom_themes.json"
+        self._commit_gate = SerializedCommitGate()
+        self._custom_theme_write_block: str | None = None
+        self._builtin_themes = self._validated_builtin_catalog()
+        self._builtin_names = frozenset(self._builtin_themes)
+        self._color_theme_names = self._validated_color_theme_names()
+        self._themes = clone_theme_catalog(self._builtin_themes)
+        self.default_mode = self._resolve_default_mode(default_mode)
         self._load_custom_themes()
-        self._theme_change_callbacks: List[Callable[[], None]] = []
-
+        self.mode = self._resolve_mode(initial_mode, self.default_mode)
+        self.color_theme = self._resolve_color_theme(initial_color_theme)
+        self._theme_change_callbacks: list[Callable[[], None]] = []
         self._apply_theme_core()
-        logger.info(
-            self._get_localized_text('theme_manager_initialized').format(
-                theme=self.mode,
-                color=self.color_theme,
-            )
+        _log(
+            logging.INFO,
+            self._get_localized_text(
+                "theme_manager_initialized", theme=self.mode, color=self.color_theme
+            ),
         )
 
-    # ------------------------------------------------------------------
-    # Localizzazione
-    # ------------------------------------------------------------------
-    def _get_localized_text(self, key: str, **kwargs: Any) -> str:
+    @property
+    def themes(self) -> ThemeCatalog:
+        """Return a detached catalog snapshot for legacy read-only consumers."""
+        return clone_theme_catalog(self._themes)
+
+    def _validated_builtin_catalog(self) -> ThemeCatalog:
+        try:
+            return validate_builtin_theme_catalog(get_builtin_themes())
+        except SCHEMA_EXCEPTIONS as error:
+            raise SettingsError(
+                "The built-in theme catalog is invalid.",
+                details=f"{type(error).__name__}: {error}",
+            ) from error
+
+    def _validated_color_theme_names(self) -> tuple[str, ...]:
+        try:
+            return validate_color_theme_names(BUILTIN_COLOR_THEME_NAMES)
+        except SCHEMA_EXCEPTIONS as error:
+            raise SettingsError(
+                "Built-in color theme names are invalid.",
+                details=f"{type(error).__name__}: {error}",
+            ) from error
+
+    def _resolve_default_mode(self, raw_mode: object) -> str:
+        try:
+            mode = normalize_theme_name(raw_mode)
+        except ValueError as error:
+            raise SettingsError("Default theme mode is invalid.") from error
+        if mode == "system" or mode not in self._builtin_themes:
+            raise SettingsError("Default theme mode must name a built-in palette.")
+        return mode
+
+    def _resolve_mode(self, raw_mode: object, fallback: str) -> str:
+        try:
+            mode = normalize_theme_name(raw_mode)
+        except ValueError:
+            return fallback
+        if mode == "system":
+            return mode
+        return mode if mode in self._themes else fallback
+
+    def _resolve_color_theme(self, raw_name: object) -> str:
+        try:
+            name = normalize_theme_name(raw_name)
+        except ValueError:
+            return self.get_default_color_theme_name()
+        return name if name in self._color_theme_names else self.get_default_color_theme_name()
+
+    def _get_localized_text(self, key: str, **kwargs: object) -> str:
         try:
             if self.localization_manager is not None:
-                txt = self.localization_manager.get_text(key, **kwargs)
-                if isinstance(txt, str) and txt.strip():
-                    return txt
-        except LOCALIZATION_EXCEPTIONS as error:
-            logger.debug(
+                text = self.localization_manager.get_text(key, **kwargs)
+                if isinstance(text, str) and text.strip():
+                    return text
+        except Exception as error:  # explicit localization-provider boundary
+            _log(
+                logging.DEBUG,
                 "ThemeManager localization fallback for %s: %s",
                 key,
                 error,
                 exc_info=True,
             )
-        try:
-            return f'[{key}]'.format(**kwargs) if kwargs else f'[{key}]'
-        except FORMAT_EXCEPTIONS:
-            return f'[{key}]'
+        return f"[{key}]"
 
-    # ------------------------------------------------------------------
-    # Temi: builtin + custom
-    # ------------------------------------------------------------------
-    def _load_builtin_themes(self) -> Dict[str, Dict[str, str]]:
-        return get_builtin_themes()
+    def _load_builtin_themes(self) -> ThemeCatalog:
+        """Return a detached built-in snapshot for compatibility consumers."""
+        return clone_theme_catalog(self._builtin_themes)
 
     def _load_custom_themes(self) -> None:
-        if not self.custom_themes_file.exists():
-            logger.info(self._get_localized_text('custom_themes_file_not_found'))
+        """Load custom themes or block writes without altering invalid bytes.
+
+        Edge cases: missing files allow creation; invalid files remain unchanged;
+        reserved names cannot shadow trusted or virtual themes.
+        """
+        try:
+            raw_catalog = self._read_custom_catalog()
+            custom_catalog = validate_custom_theme_catalog(
+                raw_catalog, builtin_names=self._builtin_names
+            )
+        except FileNotFoundError:
+            _log(logging.INFO, self._get_localized_text("custom_themes_file_not_found"))
             return
+        except FILE_EXCEPTIONS as error:
+            self._block_custom_writes(error)
+            return
+        self._themes.update(custom_catalog)
+        _log(logging.INFO, "Custom themes loaded from %s", self.custom_themes_file)
 
-        try:
-            with self.custom_themes_file.open('r', encoding='utf-8') as file_obj:
-                custom_data = json.load(file_obj)
-            if not isinstance(custom_data, dict):
-                raise ValueError('custom themes JSON must be an object')
-            for theme_name, colors in custom_data.items():
-                if isinstance(colors, dict):
-                    self.themes[str(theme_name).lower()] = colors
-            logger.info('Temi personalizzati caricati da %s', self.custom_themes_file)
-        except json.JSONDecodeError as exc:
-            logger.error(
-                'Errore lettura temi personalizzati JSON da %s: %s',
-                self.custom_themes_file,
-                exc,
-            )
-        except FILE_EXCEPTIONS as exc:
-            logger.error(
-                'Errore caricamento temi personalizzati da %s: %s',
-                self.custom_themes_file,
-                exc,
-            )
+    def _read_custom_catalog(self) -> object:
+        return read_json_file(
+            self.custom_themes_file,
+            limits=THEME_JSON_LIMITS,
+            root="object",
+        )
 
-    def save_custom_themes(self) -> None:
-        builtin_names = set(self._load_builtin_themes().keys())
-        custom_themes_to_save = {
-            name: colors
-            for name, colors in self.themes.items()
-            if name not in builtin_names
-        }
-        try:
-            self.custom_themes_file.parent.mkdir(parents=True, exist_ok=True)
-            with self.custom_themes_file.open('w', encoding='utf-8') as file_obj:
-                json.dump(custom_themes_to_save, file_obj, indent=4)
-            logger.info('Temi personalizzati salvati in %s', self.custom_themes_file)
-        except FILE_EXCEPTIONS as exc:
-            logger.error(
-                'Errore salvataggio temi personalizzati in %s: %s',
-                self.custom_themes_file,
-                exc,
+    def _block_custom_writes(self, error: Exception) -> None:
+        reason = f"{type(error).__name__}: {error}"
+        self._custom_theme_write_block = reason
+        _log(
+            logging.ERROR,
+            "Unable to load custom themes from %s; writes are blocked: %s",
+            self.custom_themes_file,
+            reason,
+        )
+
+    def _ensure_custom_catalog_writable(self) -> None:
+        if self._custom_theme_write_block is not None:
+            raise SettingsError(
+                "Custom theme writes are blocked because the existing file could not be loaded.",
+                details=self._custom_theme_write_block,
             )
 
-    # ------------------------------------------------------------------
-    # Applicazione tema (toolkit-agnostica)
-    # ------------------------------------------------------------------
-    def _apply_theme_core(self) -> None:
-        try:
-            self.notify_theme_change()
-        except CALLBACK_EXCEPTIONS:
-            logger.debug('notify_theme_change failed', exc_info=True)
+    def _persist_catalog(self, candidate: ThemeCatalog) -> DurabilityStatus:
+        """Persist a validated custom-only snapshot before live-state replacement.
 
+        Edge cases: serialization or replace failure preserves live state; a failed
+        parent-directory sync reports a committed but degraded durability result.
+        """
+        custom_catalog = extract_custom_theme_catalog(
+            candidate, builtin_names=self._builtin_names
+        )
         try:
-            if self.event_bus is not None:
-                self.event_bus.publish(
-                    AudioEventType.THEME_CHANGED,
-                    {'mode': self.mode, 'color_theme': self.color_theme},
+            _normalized, payload = serialize_json_bytes(
+                custom_catalog,
+                limits=THEME_JSON_LIMITS,
+                root="object",
+                indent=4,
+                sort_keys=True,
+            )
+            synced = write_bytes_atomic_durable(self.custom_themes_file, payload)
+        except BoundedJsonError as error:
+            raise SettingsError(
+                "Unable to serialize custom themes.",
+                details=f"{type(error).__name__}: {error}",
+            ) from error
+        except OSError as error:
+            raise SettingsError(
+                "Unable to persist custom themes.",
+                details=f"{type(error).__name__}: {error}",
+            ) from error
+        return DurabilityStatus.from_directory_sync(synced)
+
+    def _mutate_custom_catalog(self, mutation: ThemeMutation) -> DurabilityStatus:
+        """Serialize concurrent mutations and publish only committed state.
+
+        Edge cases: reentry fails instead of deadlocking; schema/write failures release
+        the next writer; no candidate is exposed before persistence completes.
+        """
+        try:
+            with self._commit_gate.transaction():
+                self._ensure_custom_catalog_writable()
+                candidate = clone_theme_catalog(self._themes)
+                mutation(candidate)
+                normalized = normalize_runtime_theme_catalog(
+                    candidate, builtin_catalog=self._builtin_themes
                 )
-        except EVENT_BUS_EXCEPTIONS:
-            logger.debug('Could not publish THEME_CHANGED', exc_info=True)
-
-    def _apply_ctk_theme(self) -> None:  # pragma: no cover - alias compatibilità
-        self._apply_theme_core()
-
-    # ------------------------------------------------------------------
-    # API pubblica
-    # ------------------------------------------------------------------
-    def set_theme(self, new_mode: str, new_color_theme: str) -> bool:
-        new_mode = (new_mode or self.default_mode).lower()
-        new_color_theme = (new_color_theme or self.color_theme).lower()
-
-        if new_mode not in self.themes and new_mode != 'system':
-            new_mode = self.default_mode
-
-        changed = (self.mode != new_mode) or (self.color_theme != new_color_theme)
-        if not changed:
-            logger.debug(self._get_localized_text('theme_no_change'))
-            return False
-
-        self.mode, self.color_theme = new_mode, new_color_theme
-        self._apply_theme_core()
-        logger.info(
-            self._get_localized_text('theme_changed').format(
-                mode=self.mode,
-                color=self.color_theme,
+                status = self._persist_catalog(normalized)
+                self._themes = normalized
+        except SettingsError:
+            raise
+        except SCHEMA_EXCEPTIONS + (RuntimeError,) as error:
+            raise SettingsError(
+                "Unable to apply the custom theme mutation.",
+                details=f"{type(error).__name__}: {error}",
+            ) from error
+        if not status.is_fully_durable:
+            _log(
+                logging.WARNING,
+                "Custom themes committed without confirmed parent-directory sync: %s",
+                self.custom_themes_file,
             )
+        return status
+
+    def save_custom_themes(self) -> DurabilityStatus:
+        return self._mutate_custom_catalog(lambda _candidate: None)
+
+    def _apply_theme_core(self) -> None:
+        self.notify_theme_change()
+        if self.event_bus is None:
+            return
+        try:
+            published = self.event_bus.publish(
+                AudioEventType.THEME_CHANGED,
+                {"mode": self.mode, "color_theme": self.color_theme},
+            )
+            if published is False:
+                _log(logging.WARNING, "THEME_CHANGED was rejected by the event bus.")
+        except Exception as error:  # explicit event-publisher boundary
+            _log(logging.ERROR, "Could not publish THEME_CHANGED: %s", error, exc_info=True)
+
+    def _apply_ctk_theme(self) -> None:  # pragma: no cover - compatibility alias
+        self._apply_theme_core()
+
+    def set_theme(self, new_mode: str, new_color_theme: str) -> bool:
+        resolved_mode = self._resolve_mode(new_mode, self.default_mode)
+        resolved_color = self._resolve_color_theme(new_color_theme)
+        if self.mode == resolved_mode and self.color_theme == resolved_color:
+            _log(logging.DEBUG, self._get_localized_text("theme_no_change"))
+            return False
+        self.mode, self.color_theme = resolved_mode, resolved_color
+        self._apply_theme_core()
+        _log(
+            logging.INFO,
+            self._get_localized_text(
+                "theme_changed", mode=self.mode, color=self.color_theme
+            ),
         )
         return True
 
-    def get_current_theme_colors(self) -> Dict[str, str]:
-        if self.mode == 'system':
-            return self.themes.get(self.default_mode, self._load_builtin_themes()['dark'])
-        return self.themes.get(self.mode, self.themes.get(self.default_mode, {}))
+    def get_current_theme_colors(self) -> ThemeColors:
+        selected = self.default_mode if self.mode == "system" else self.mode
+        palette = self._themes.get(selected, self._builtin_themes["dark"])
+        return clone_theme_colors(palette)
 
-    def get_current_theme(self) -> Dict[str, str]:
+    def get_current_theme(self) -> ThemeColors:
         return self.get_current_theme_colors()
 
     def get_current_theme_name(self) -> str:
@@ -188,7 +333,7 @@ class ThemeManager:
         return self.mode
 
     @property
-    def current_theme(self) -> Dict[str, str]:
+    def current_theme(self) -> ThemeColors:
         return self.get_current_theme_colors()
 
     def get_current_color_theme_name(self) -> str:
@@ -198,100 +343,105 @@ class ThemeManager:
         return self.default_mode
 
     def get_default_color_theme_name(self) -> str:
-        return 'blue'
+        return "blue" if "blue" in self._color_theme_names else self._color_theme_names[0]
 
-    def get_available_theme_names(self) -> List[str]:
-        return list(self.themes.keys())
+    def get_available_theme_names(self) -> list[str]:
+        return list(self._themes)
 
-    def get_available_color_theme_names(self) -> List[str]:
-        return list(BUILTIN_COLOR_THEME_NAMES)
+    def get_available_color_theme_names(self) -> list[str]:
+        return list(self._color_theme_names)
 
-    # ------------------------------------------------------------------
-    # Tema personalizzato
-    # ------------------------------------------------------------------
-    def set_custom_theme_color(self, color_key: str, hex_color: str) -> None:
-        if 'custom' not in self.themes:
-            base = self._load_builtin_themes()['dark'].copy()
-            base['name'] = 'custom'
-            self.themes['custom'] = base
+    def _build_custom_base(self) -> ThemeColors:
+        return clone_theme_colors(self._builtin_themes["dark"])
 
-        self.themes['custom'][color_key] = hex_color
-        self.save_custom_themes()
-        self.set_theme('custom', self.color_theme)
+    def _announce_custom_theme_commit(self) -> None:
+        if not self.set_theme("custom", self.color_theme):
+            self._apply_theme_core()
+            _log(logging.INFO, "Custom theme palette changed while already active.")
 
-    def get_custom_theme_colors(self) -> Dict[str, str]:
-        return self.themes.get('custom', {})
+    def set_custom_theme_color(self, color_key: str, hex_color: str) -> DurabilityStatus:
+        try:
+            validated_key = validate_theme_color_key(color_key)
+            validated_color = validate_theme_color(hex_color, key=validated_key)
+        except ValueError as error:
+            raise SettingsError(
+                "Invalid custom theme color.",
+                details=f"{type(error).__name__}: {error}",
+            ) from error
 
-    def reset_custom_theme_colors(self) -> None:
-        base = self._load_builtin_themes()['dark'].copy()
-        base['name'] = 'custom'
-        self.themes['custom'] = base
-        self.save_custom_themes()
-        self.set_theme('custom', self.color_theme)
+        def update(candidate: ThemeCatalog) -> None:
+            custom = candidate.setdefault("custom", self._build_custom_base())
+            custom[validated_key] = validated_color
 
-    # ------------------------------------------------------------------
-    # Callback di cambio tema
-    # ------------------------------------------------------------------
+        status = self._mutate_custom_catalog(update)
+        self._announce_custom_theme_commit()
+        return status
+
+    def get_custom_theme_colors(self) -> ThemeColors:
+        custom = self._themes.get("custom")
+        return clone_theme_colors(custom) if custom is not None else {}
+
+    def reset_custom_theme_colors(self) -> DurabilityStatus:
+        def reset(candidate: ThemeCatalog) -> None:
+            candidate["custom"] = self._build_custom_base()
+
+        status = self._mutate_custom_catalog(reset)
+        self._announce_custom_theme_commit()
+        return status
+
     def _callback_name(self, callback: Callable[[], None]) -> str:
         try:
-            return getattr(callback, '__name__', repr(callback))
-        except CALLBACK_EXCEPTIONS:
-            return '<callback>'
+            return getattr(callback, "__name__", repr(callback))
+        except Exception:  # explicit diagnostic boundary for external callbacks
+            return "<callback>"
 
-    def register_theme_change_callback(
-        self, callback: Callable[[], None]
-    ) -> Callable[[], None]:
+    def register_theme_change_callback(self, callback: Callable[[], None]) -> Callable[[], None]:
         if callback not in self._theme_change_callbacks:
             self._theme_change_callbacks.append(callback)
-            logger.debug(
-                self._get_localized_text('registered_theme_callback').format(
-                    callback=self._callback_name(callback)
-                )
+            _log(
+                logging.DEBUG,
+                self._get_localized_text(
+                    "registered_theme_callback", callback=self._callback_name(callback)
+                ),
             )
         return callback
 
     def unregister_theme_change_callback(self, callback: Callable[[], None]) -> None:
         if callback in self._theme_change_callbacks:
             self._theme_change_callbacks.remove(callback)
-            logger.debug(
-                self._get_localized_text('unregistered_theme_callback').format(
-                    callback=self._callback_name(callback)
-                )
+            _log(
+                logging.DEBUG,
+                self._get_localized_text(
+                    "unregistered_theme_callback", callback=self._callback_name(callback)
+                ),
             )
 
     def notify_theme_change(self) -> None:
-        callbacks_snapshot = list(self._theme_change_callbacks)
-        logger.debug(
-            self._get_localized_text('notifying_theme_change').format(
-                count=len(callbacks_snapshot)
-            )
+        callbacks = list(self._theme_change_callbacks)
+        _log(
+            logging.DEBUG,
+            self._get_localized_text("notifying_theme_change", count=len(callbacks)),
         )
-        for callback in callbacks_snapshot:
+        for callback in callbacks:
             try:
                 callback()
-            except CALLBACK_EXCEPTIONS as exc:
-                logger.exception(
-                    self._get_localized_text('error_in_theme_callback').format(
-                        callback=self._callback_name(callback),
-                        error=exc,
-                    )
+            except Exception as error:  # explicit external-callback boundary
+                _log(
+                    logging.ERROR,
+                    "Theme callback %s failed: %s",
+                    self._callback_name(callback),
+                    error,
+                    exc_info=True,
                 )
 
-    # ------------------------------------------------------------------
-    # Compatibilità con vecchio ensure_ttk_treeview_style
-    # ------------------------------------------------------------------
-    def ensure_ttk_treeview_style(
-        self, style_name: str
-    ) -> None:  # pragma: no cover - legacy no-op
-        logger.debug(
-            'ensure_ttk_treeview_style(%s) called - no-op in the current runtime',
+    def ensure_ttk_treeview_style(self, style_name: str) -> None:  # pragma: no cover
+        _log(
+            logging.DEBUG,
+            "ensure_ttk_treeview_style(%s) called - no-op in current runtime",
             style_name,
         )
 
-    # ------------------------------------------------------------------
-    # Chiusura
-    # ------------------------------------------------------------------
     def close(self) -> None:
-        logger.info(self._get_localized_text('theme_manager_closing'))
+        _log(logging.INFO, self._get_localized_text("theme_manager_closing"))
         self._theme_change_callbacks.clear()
-        logger.info(self._get_localized_text('theme_manager_closed'))
+        _log(logging.INFO, self._get_localized_text("theme_manager_closed"))

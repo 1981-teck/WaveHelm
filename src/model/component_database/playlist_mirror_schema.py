@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
+from typing import Protocol
+
+from src.model.component_database.db_primitives import SqlExecutor
 
 COMPONENT_SCHEMA_TABLE = "wavehelm_component_schema"
 PLAYLIST_MIRROR_COMPONENT = "playlist_mirror"
@@ -9,6 +12,20 @@ PLAYLIST_MIRROR_SCHEMA_VERSION = 2
 LEGACY_PLAYLIST_MIRROR_SCHEMA_VERSION = 1
 PLAYLIST_MIRROR_OUTBOX_TABLE = "playlist_mirror_outbox"
 PLAYLIST_MIRROR_REPAIR_TABLE = "playlist_mirror_repair_log"
+
+
+class SchemaTransactionOwner(SqlExecutor, Protocol):
+    """SQL executor that explicitly owns schema transaction completion."""
+
+    @property
+    def in_transaction(self) -> bool:
+        """Return whether the schema owner currently has an active transaction."""
+
+    def commit(self) -> None:
+        """Commit the schema transaction."""
+
+    def rollback(self) -> None:
+        """Roll back the schema transaction."""
 
 _COMPONENT_SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS {COMPONENT_SCHEMA_TABLE} (
@@ -87,7 +104,7 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+def _table_exists(connection: SqlExecutor, table_name: str) -> bool:
     row = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table_name,),
@@ -95,13 +112,13 @@ def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
-def _table_columns(connection: sqlite3.Connection, table_name: str) -> frozenset[str]:
+def _table_columns(connection: SqlExecutor, table_name: str) -> frozenset[str]:
     rows = connection.execute(f'PRAGMA table_info("{table_name}")').fetchall()
     return frozenset(str(row[1]) for row in rows)
 
 
 def _require_exact_columns(
-    connection: sqlite3.Connection,
+    connection: SqlExecutor,
     table_name: str,
     expected_columns: frozenset[str],
 ) -> None:
@@ -122,7 +139,7 @@ def _require_exact_columns(
     )
 
 
-def _read_recorded_version(connection: sqlite3.Connection) -> int | None:
+def _read_recorded_version(connection: SqlExecutor) -> int | None:
     row = connection.execute(
         f"SELECT schema_version FROM {COMPONENT_SCHEMA_TABLE} WHERE component = ?",
         (PLAYLIST_MIRROR_COMPONENT,),
@@ -141,7 +158,7 @@ def _read_recorded_version(connection: sqlite3.Connection) -> int | None:
     return value
 
 
-def _record_current_version(connection: sqlite3.Connection) -> None:
+def _record_current_version(connection: SqlExecutor) -> None:
     connection.execute(
         f"""
         INSERT INTO {COMPONENT_SCHEMA_TABLE} (component, schema_version, updated_at)
@@ -158,7 +175,7 @@ def _record_current_version(connection: sqlite3.Connection) -> None:
     )
 
 
-def _create_current_schema(connection: sqlite3.Connection) -> None:
+def _create_current_schema(connection: SqlExecutor) -> None:
     connection.execute(_PLAYLIST_MIRROR_OUTBOX_SQL)
     connection.execute(_PLAYLIST_MIRROR_DUE_INDEX_SQL)
     connection.execute(_PLAYLIST_MIRROR_REPAIR_SQL)
@@ -166,7 +183,7 @@ def _create_current_schema(connection: sqlite3.Connection) -> None:
     _validate_current_tables(connection)
 
 
-def _migrate_legacy_schema(connection: sqlite3.Connection) -> None:
+def _migrate_legacy_schema(connection: SqlExecutor) -> None:
     _require_exact_columns(
         connection,
         PLAYLIST_MIRROR_OUTBOX_TABLE,
@@ -186,7 +203,7 @@ def _migrate_legacy_schema(connection: sqlite3.Connection) -> None:
     )
 
 
-def _validate_current_tables(connection: sqlite3.Connection) -> None:
+def _validate_current_tables(connection: SqlExecutor) -> None:
     for table_name, columns in (
         (PLAYLIST_MIRROR_OUTBOX_TABLE, _OUTBOX_COLUMNS),
         (PLAYLIST_MIRROR_REPAIR_TABLE, _REPAIR_COLUMNS),
@@ -198,7 +215,7 @@ def _validate_current_tables(connection: sqlite3.Connection) -> None:
         _require_exact_columns(connection, table_name, columns)
 
 
-def _infer_unversioned_schema(connection: sqlite3.Connection) -> int:
+def _infer_unversioned_schema(connection: SqlExecutor) -> int:
     outbox_exists = _table_exists(connection, PLAYLIST_MIRROR_OUTBOX_TABLE)
     repair_exists = _table_exists(connection, PLAYLIST_MIRROR_REPAIR_TABLE)
     if not outbox_exists and not repair_exists:
@@ -214,7 +231,7 @@ def _infer_unversioned_schema(connection: sqlite3.Connection) -> int:
     return PLAYLIST_MIRROR_SCHEMA_VERSION
 
 
-def _validate_component_schema_table(connection: sqlite3.Connection) -> None:
+def _validate_component_schema_table(connection: SqlExecutor) -> None:
     _require_exact_columns(
         connection,
         COMPONENT_SCHEMA_TABLE,
@@ -222,7 +239,7 @@ def _validate_component_schema_table(connection: sqlite3.Connection) -> None:
     )
 
 
-def ensure_playlist_mirror_schema(connection: sqlite3.Connection) -> int:
+def ensure_playlist_mirror_schema(connection: SchemaTransactionOwner) -> int:
     """Create or migrate the playlist mirror schema in one transaction.
 
     Edge cases:
@@ -274,7 +291,7 @@ def ensure_playlist_mirror_schema(connection: sqlite3.Connection) -> int:
         ) from error
 
 
-def read_playlist_mirror_schema_version(connection: sqlite3.Connection) -> int:
+def read_playlist_mirror_schema_version(connection: SqlExecutor) -> int:
     """Read and validate both the recorded version and its physical tables."""
     try:
         if not _table_exists(connection, COMPONENT_SCHEMA_TABLE):

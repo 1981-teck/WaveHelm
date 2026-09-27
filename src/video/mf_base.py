@@ -26,10 +26,10 @@ from typing import Iterable, List
 
 logger = logging.getLogger(__name__)
 
-# Intentional boundary: compatibility bridge modules may expose dynamic
-# attributes or proxies whose resolution can fail for environment-specific
-# reasons. Skip those exports and keep the bridge importable.
-MF_BASE_EXPORT_EXCEPTIONS = (Exception,)
+# Compatibility modules can legitimately expose a name that disappears at
+# resolution time (for example through a dynamic module attribute). Only that
+# absence is skipped; unexpected runtime failures must remain visible.
+MF_BASE_EXPORT_EXCEPTIONS = (AttributeError,)
 
 
 def _public_names_from_module(mod: ModuleType) -> List[str]:
@@ -78,7 +78,15 @@ from .component_base import mf_helpers as _mf_helpers
 from .component_base import utils as _utils
 
 # Re-export controllato (ordine storico: definitions, com_helpers, mf_helpers, utils)
-_export(_definitions, _public_names_from_module(_definitions), source_label="definitions")
+# Preserve the historical final ctypes proxy from com_helpers. The stdlib
+# ctypes import in definitions is an implementation dependency, not a competing
+# facade provider. Skip that intermediate binding rather than suppressing warnings.
+# Fresh import, reload and unexpected-provider collisions are covered by tests.
+_export(
+    _definitions,
+    (name for name in _public_names_from_module(_definitions) if name != "ctypes"),
+    source_label="definitions",
+)
 _export(_com_helpers, _public_names_from_module(_com_helpers), source_label="com_helpers")
 _export(_mf_helpers, _public_names_from_module(_mf_helpers), source_label="mf_helpers")
 _export(_utils, _public_names_from_module(_utils), source_label="utils")

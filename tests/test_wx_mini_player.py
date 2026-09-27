@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import time
+from src.controller.playback_view import PlaybackView
+from src.controller.component_player.playback_state_manager import PlayerState
+from src.playback_observation import ClockObservation, ClockValue, ClockOrigin, ProgressSnapshot
 
 from src.audio.audio_event_models import AudioEventType
 from src.model.media_file import MediaType
@@ -112,6 +116,23 @@ class DummyPlayerController:
         self.current_track = DummyTrack('Initial Track', '/tmp/initial.mp3')
         self.position = 12.0
         self.duration = 120.0
+        self._view_sequence = 0
+        self.set_view('Initial Track', '/tmp/initial.mp3', 12.0, 120.0, playing=False)
+
+    def set_view(self, title, path, position, duration, *, playing=True, loop=False, shuffle=False):
+        # Explicit test-owned current cache, never populated from event payloads.
+        self._view_sequence += 1
+        state = PlayerState.PLAYING_AUDIO if playing else PlayerState.PAUSED_AUDIO
+        now = time.monotonic()
+        clock = ClockObservation(ClockValue.read(position), ClockValue.read(duration, duration=True),
+                                 now, now, ClockOrigin.AUDIO_MIXER, path, None)
+        sample = ProgressSnapshot('fake-test-stream', self._view_sequence, self._view_sequence,
+                                  state.name, path, 0, clock)
+        self.cached_view = PlaybackView(self._view_sequence, state, path, 0, title,
+                                        False, loop, shuffle, sample)
+
+    def get_playback_view(self):
+        return self.cached_view
 
     def toggle_shuffle(self):
         self.calls.append('toggle_shuffle')
@@ -260,6 +281,7 @@ def test_wx_mini_player_transport_buttons_fall_back_without_event_bus(monkeypatc
 
 def test_wx_mini_player_updates_from_event_bus_and_seek(monkeypatch):
     mini_player, player, event_bus, _ = build_mini_player(monkeypatch)
+    player.set_view('Song A', '/tmp/song_a.mp3', 30.0, 120.0, loop=True, shuffle=True)
 
     event_bus.publish(
         AudioEventType.PLAYER_STATE_CHANGED,
@@ -285,7 +307,7 @@ def test_wx_mini_player_updates_from_event_bus_and_seek(monkeypatch):
     assert mini_player.shuffle_button.label.endswith('✓')
     assert mini_player.loop_button.label.endswith('✓')
     assert mini_player.play_button.enabled is False
-    assert mini_player.prev_button.enabled is False
+    assert mini_player.prev_button.enabled is True  # Current queue context, not stale event buttons.
     assert mini_player.time_left_label.label == '0:30'
     assert mini_player.time_right_label.label == '2:00'
     assert mini_player.progress_slider.GetValue() == 250
@@ -293,13 +315,18 @@ def test_wx_mini_player_updates_from_event_bus_and_seek(monkeypatch):
     mini_player.progress_slider.SetValue(500)
     mini_player._on_progress_slider_changed()
 
-    assert player.audio_engine.seek_calls == [60.0]
+    assert player.seek_calls == [60.0]
+    assert player.audio_engine.seek_calls == []
+    assert mini_player.time_left_label.label == '0:30'  # Forwarded is not completed.
+    player.set_view('Song A', '/tmp/song_a.mp3', 60.0, 120.0)
+    mini_player._poll_progress()
     assert mini_player.time_left_label.label == '1:00'
 
 
 
 def test_wx_mini_player_click_seek_uses_pointer_position(monkeypatch):
     mini_player, player, event_bus, _ = build_mini_player(monkeypatch)
+    player.set_view('Song B', '/tmp/song_b.mp3', 0.0, 200.0)
 
     event_bus.publish(
         AudioEventType.PLAYER_STATE_CHANGED,
@@ -320,8 +347,15 @@ def test_wx_mini_player_click_seek_uses_pointer_position(monkeypatch):
 
     mini_player.progress_slider.SetClientSize((201, 24))
     mini_player._on_progress_slider_pointer_down(FakeMouseEvent(x=150))
+    assert player.seek_calls == []  # Preview only until release.
+    mini_player._on_progress_slider_pointer_up(FakeMouseEvent(x=150))
 
-    assert player.audio_engine.seek_calls == [150.0]
+    assert player.seek_calls == [150.0]
+    assert player.audio_engine.seek_calls == []
+    assert mini_player.progress_slider.GetValue() == 750  # Drawing-only submitted preview; not a confirmed clock.
+    assert mini_player.time_left_label.label == '0:00'
+    player.set_view('Song B', '/tmp/song_b.mp3', 150.0, 200.0)
+    mini_player._poll_progress()
     assert mini_player.progress_slider.GetValue() == 750
     assert mini_player.time_left_label.label == '2:30'
     assert mini_player.time_right_label.label == '3:20'
@@ -348,4 +382,4 @@ def test_wx_mini_player_close_unsubscribes_and_stops_timer(monkeypatch):
     mini_player.close()
 
     assert mini_player._progress_timer is None
-    assert len(event_bus.unsubscribed) == 7
+    assert len(event_bus.unsubscribed) == 8

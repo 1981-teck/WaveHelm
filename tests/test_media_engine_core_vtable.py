@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from src.video import media_engine_core_vtable as vtable_mod
 from src.video.media_engine_core_shared import MediaEngineError
 
@@ -27,10 +29,11 @@ def test_stop_engine_ptr_playback_tolerates_pause_and_seek_failures():
     assert [name for name, _ in core.calls] == ['Pause', 'SetCurrentTime']
 
 
-def test_shutdown_engine_ptr_tolerates_shutdown_failure():
+def test_shutdown_engine_ptr_preserves_shutdown_failure():
     core = DummyCore({'Shutdown'})
 
-    vtable_mod._shutdown_engine_ptr(core, object())
+    with pytest.raises(MediaEngineError, match='Shutdown'):
+        vtable_mod._shutdown_engine_ptr(core, object())
 
     assert [name for name, _ in core.calls] == ['Shutdown']
 

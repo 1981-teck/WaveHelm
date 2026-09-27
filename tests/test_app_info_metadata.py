@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.config.app_metadata import get_app_general_metadata
+from src.config.app_metadata import APP_VERSION_FALLBACK, get_app_general_metadata
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +23,7 @@ def test_app_info_uses_current_stack_metadata():
 
     assert general.get("app_name") == "WaveHelm"
     assert general.get("organization_name") == "WaveHelm"
-    assert general.get("version") == "1.0.1"
+    assert general.get("version") == "1.0.2"
     assert general.get("target_platform") == "Windows"
     assert general.get("license") == "GNU GPL v3.0 or later (with Section 7 additional terms)"
     assert general.get("website_url") == "https://1981-teck.github.io/WaveHelm/"
@@ -83,4 +83,5 @@ def test_canonical_metadata_loader_matches_product_identity():
     assert loaded_general["app_name"] == general["app_name"]
     assert loaded_general["organization_name"] == general["organization_name"]
     assert loaded_general["version"] == general["version"]
+    assert APP_VERSION_FALLBACK == general["version"]
     assert loaded_general["website_url"] == general["website_url"]

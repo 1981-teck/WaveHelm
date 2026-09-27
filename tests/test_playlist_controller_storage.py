@@ -156,7 +156,7 @@ def test_replace_failure_preserves_target_and_old_rename_file(
     def fail_replace(_source: object, _target: object) -> None:
         raise OSError(errno.EIO, "replace failed")
 
-    monkeypatch.setattr(playlist_storage.os, "replace", fail_replace)
+    monkeypatch.setattr(playlist_storage, "_replace_file_durable", fail_replace)
     with pytest.raises(playlist_storage.PlaylistWriteError) as captured:
         controller._sync_playlist_file(1, previous_name="Old Name")
 

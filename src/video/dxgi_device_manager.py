@@ -5,7 +5,7 @@ import ctypes
 import logging
 import threading
 from ctypes import POINTER, byref, c_uint
-from typing import Any, Optional
+from typing import Optional
 
 from .component_base.com_helpers import _check_hr
 from .component_base.definitions import HRESULT, IUnknown, IMFDXGIDeviceManager, _mfplat
@@ -46,7 +46,7 @@ def _resolve_mfcreate_dxgi_device_manager():
 _MFCreateDXGIDeviceManager = _resolve_mfcreate_dxgi_device_manager()
 
 
-def _to_nonzero_int_ptr(value: Any, name: str) -> int:
+def _to_nonzero_int_ptr(value: object, name: str) -> int:
     if isinstance(value, int):
         ptr = int(value)
     elif isinstance(value, ctypes.c_void_p):

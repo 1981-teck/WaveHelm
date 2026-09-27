@@ -112,6 +112,77 @@ Run the test suite first and then verify the local environment:
 - wxPython installation
 - Windows-only runtime assumptions
 
+### pygame reports `pkg_resources is deprecated as an API`
+
+This warning originates in installed pygame 2.6.1, not in WaveHelm's DSP code.
+Replacing the WaveHelm source alone does not repair an existing global Python
+package environment. Do not downgrade or uninstall global setuptools, edit
+site-packages, or disable warnings. See [the log review](docs/startup-log-review.md).
+
+The isolated remedy below is for **Windows x64, existing Python 3.12**, from the
+extracted candidate source directory. It creates a NEW environment outside the
+repository and installs the already checked-in hashed runtime lock. It does not
+modify the working virtualenv, global Python, APPDATA, database, media or presets.
+Network access is required. This procedure is **NOT_RUN in the Linux delivery
+environment**; completion requires the real import/resource probe below.
+
+Run as an ordinary user in PowerShell. No activation or execution-policy change
+is required. The explicit base-interpreter path matches the supplied log and
+avoids launcher-triggered interpreter installation. Stop at any error; do not remove hash checks or retry into the same
+partially created directory.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$CandidateEnv = Join-Path $env:LOCALAPPDATA 'WaveHelm-runtime-step07G2-check'
+if (Test-Path -LiteralPath $CandidateEnv) { throw 'Choose a new environment directory; keep the existing one.' }
+$Lock = (Resolve-Path -LiteralPath '.\locks\windows-py312-runtime\requirements.lock').Path
+$BasePython = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'
+if (-not (Test-Path -LiteralPath $BasePython -PathType Leaf)) { throw 'Select the exact path of an existing Python 3.12 executable.' }
+& $BasePython -I -c "import struct, sys; sys.exit(0 if sys.platform == 'win32' and struct.calcsize('P') == 8 and sys.version_info[:2] == (3, 12) else 1)"
+if ($LASTEXITCODE -ne 0) { throw 'An existing Windows x64 Python 3.12 is required.' }
+& $BasePython -I -m venv $CandidateEnv
+if ($LASTEXITCODE -ne 0) { throw 'Environment creation failed.' }
+$Runtime = Join-Path $CandidateEnv 'Scripts\python.exe'
+& $Runtime -I -c "import importlib.util, sys; sys.exit(0 if sys.prefix != sys.base_prefix and importlib.util.find_spec('pkg_resources') is None else 1)"
+if ($LASTEXITCODE -ne 0) { throw 'Environment is not isolated from legacy pkg_resources.' }
+& $Runtime -I -m pip --isolated install --index-url https://pypi.org/simple --require-hashes --only-binary=:all: -r $Lock
+if ($LASTEXITCODE -ne 0) { throw 'Locked installation failed; keep its error output.' }
+& $Runtime -I -m pip --isolated check
+if ($LASTEXITCODE -ne 0) { throw 'Installed dependency consistency failed.' }
+```
+
+Then execute the following strict, real dependency probe. It does not start the
+WaveHelm GUI or touch user playback data. A warning, missing resource, wrong pygame
+version or non-isolated interpreter causes a nonzero exit. A successful probe is
+not a complete audio-device or application qualification.
+
+```powershell
+$Probe = @'
+import importlib.metadata as metadata
+import importlib.util
+import sys
+
+if sys.prefix == sys.base_prefix or importlib.util.find_spec('pkg_resources') is not None:
+    raise RuntimeError('Expected an isolated runtime without pkg_resources')
+if metadata.version('pygame') != '2.6.1':
+    raise RuntimeError('Unexpected pygame version')
+import pygame
+from pygame.pkgdata import getResource
+
+with getResource('freesansbold.ttf', 'pygame') as resource:
+    if not resource.read(4):
+        raise RuntimeError('Empty pygame font resource')
+print('DEPENDENCY_IMPORT_RESOURCE_CHECK_PASSED', sys.executable)
+'@
+& $Runtime -I -B -W error::UserWarning -c $Probe
+if ($LASTEXITCODE -ne 0) { throw 'The pygame warning/resource gate is still open.' }
+```
+
+Keep the console output and exact interpreter path. Existing settings and media
+remain unchanged because this procedure does not launch WaveHelm. The final GUI
+and media smoke on this interpreter is a separate, deliberate qualification step.
+Never describe a documented but unexecuted command as a fixed user environment.
+
 ## Related repository files
 
 - [README.md](README.md)

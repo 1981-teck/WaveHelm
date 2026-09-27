@@ -233,7 +233,7 @@ def test_set_event_handler_and_main_view_wiring_are_forwarded():
     assert handler.main_views == ['main-view']
 
 
-def test_set_playback_context_coerces_index_for_switch_logic_and_publishes_playlist():
+def test_set_playback_context_video_to_video_defers_stop_for_adapter_reuse():
     controller, state, queue, engine, _, event_bus = _make_controller()
     state._stopped = False
     state._video = True
@@ -241,7 +241,7 @@ def test_set_playback_context_coerces_index_for_switch_logic_and_publishes_playl
 
     controller.set_playback_context(tracks, '1')
 
-    assert engine.stop_calls == 1
+    assert engine.stop_calls == 0
     assert queue.received[-1][1] == '1'
     assert state.current_track is tracks[1]
     assert any(event_type == AudioEventType.PLAYLIST_CHANGED for event_type, _ in event_bus.published)
@@ -358,3 +358,41 @@ def test_previous_switches_from_video_to_previous_audio_and_requests_video_clean
     assert engine.stop_calls == 1
     assert engine.play_calls[-1] == (first, False)
     assert (AudioEventType.CANCEL_VIDEO_PLAYBACK, {}) in event_bus.published
+
+def test_next_video_to_video_does_not_preclose_engine_controller():
+    controller, state, queue, engine, _, event_bus = _make_controller()
+    first = DummyTrack('first.mp4', MediaType.VIDEO)
+    second = DummyTrack('second.mp4', MediaType.VIDEO)
+    queue.playlist = [first, second]
+    queue.index = 0
+    queue.current_track = first
+    state.current_track = first
+    state._video = True
+
+    controller.next()
+
+    assert queue.current_track is second
+    assert state.current_track is second
+    assert engine.stop_calls == 0
+    assert engine.play_calls[-1] == (second, False)
+    assert (AudioEventType.CANCEL_VIDEO_PLAYBACK, {}) not in event_bus.published
+
+
+def test_previous_video_to_video_does_not_preclose_engine_controller():
+    controller, state, queue, engine, _, event_bus = _make_controller()
+    first = DummyTrack('first.mp4', MediaType.VIDEO)
+    second = DummyTrack('second.mp4', MediaType.VIDEO)
+    queue.playlist = [first, second]
+    queue.index = 1
+    queue.current_track = second
+    state.current_track = second
+    state._video = True
+
+    controller.previous()
+
+    assert queue.current_track is first
+    assert state.current_track is first
+    assert engine.stop_calls == 0
+    assert engine.play_calls[-1] == (first, False)
+    assert (AudioEventType.CANCEL_VIDEO_PLAYBACK, {}) not in event_bus.published
+

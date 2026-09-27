@@ -11,7 +11,6 @@ import numpy as np
 import pygame
 import soundfile as sf
 
-from src.audio.audio_events import AudioEventType
 from src.audio.audio_engine_shared import VIDEO_EXTS
 
 logger = logging.getLogger(__name__)

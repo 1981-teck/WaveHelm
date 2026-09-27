@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from src.ui_wx.common import create_flow_sizer
 from src.ui_wx.mini_player import MiniPlayer
 from src.ui_wx.view_factory import create_page_widget
 

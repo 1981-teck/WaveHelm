@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
-"""mf_media_engine_notify.py
+"""Compatibility API for IMFMediaEngineNotify callbacks and event names.
 
-Compatibilità: callback IMFMediaEngineNotify e utilità correlate.
+The canonical provider is
+``src.video.component_adapter.media_engine_events._MediaEngineNotifyCOM``.
+It selects comtypes when available and a ctypes fallback otherwise.
 
-L'implementazione attuale della callback COM è basata su `comtypes` ed è fornita da:
-  - `src.video.component_adapter.media_engine_events._MediaEngineNotifyCOM`
-
-Questo modulo mantiene API di compatibilità:
-- `PyMediaEngineNotify` (alias dell'implementazione corrente)
-- `create_media_engine_notify()`
-- `get_event_name()`
+This module retains the provider alias ``PyMediaEngineNotify``, the factory
+``create_media_engine_notify()`` and ``get_event_name()``. Provider selection
+and COM resource ownership remain with the existing implementation and caller.
 """
 
 from __future__ import annotations
@@ -96,14 +94,15 @@ def get_event_name(event_id: Any) -> str:
     return _EVENT_NAMES.get(eid, f"EVENT_{eid}")
 
 
-# Alias di compatibilità: l'implementazione corrente è basata su comtypes.
+# Compatibility alias for the existing provider-selected implementation.
 PyMediaEngineNotify = _MediaEngineNotifyCOM
 
 
 def create_media_engine_notify(adapter: Any) -> PyMediaEngineNotify:
-    """Factory di compatibilità per l'oggetto notify.
+    """Construct the current provider without changing its error behavior.
 
-    Nota: se `comtypes` non è disponibile, `_MediaEngineNotifyCOM` solleverà.
+    The provider uses comtypes when available, or its ctypes fallback otherwise.
+    This factory does not initialize a COM apartment or qualify native use.
     """
     return PyMediaEngineNotify(adapter)
 

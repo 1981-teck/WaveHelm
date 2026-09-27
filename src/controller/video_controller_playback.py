@@ -1,4 +1,8 @@
 from __future__ import annotations
+from .video_controller_transport import (
+    pause, resume, stop, set_volume, get_duration, get_position, seek, poll_end, observe_end, finalize_video_end, get_seek_receipt, pump_pending_events,
+)
+
 
 import logging
 import time
@@ -11,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 ADAPTER_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError, OSError)
 FORMAT_EXCEPTIONS = (TypeError, ValueError)
-
 
 
 def _normalize_audio_track_candidates(candidate_stream_indices: Any) -> tuple[int, ...]:
@@ -44,7 +47,6 @@ def _normalize_audio_track_candidates(candidate_stream_indices: Any) -> tuple[in
     return tuple(normalized)
 
 
-
 def get_audio_track_candidates(self) -> tuple[int, ...]:
     """Return the current controller-level audio track candidates.
 
@@ -63,7 +65,6 @@ def get_audio_track_candidates(self) -> tuple[int, ...]:
     return ()
 
 
-
 def set_audio_track_candidates(self, candidate_stream_indices: Any) -> tuple[int, ...]:
     """Store deterministic audio-track candidates on the controller for playback fallback and UI.
 
@@ -77,7 +78,6 @@ def set_audio_track_candidates(self, candidate_stream_indices: Any) -> tuple[int
     if not normalized_candidates:
         self._current_audio_stream_index = None
     return normalized_candidates
-
 
 
 def get_selected_audio_streams(self) -> tuple[int, ...]:
@@ -99,7 +99,6 @@ def get_selected_audio_streams(self) -> tuple[int, ...]:
         logger.debug('[VideoController] get_selected_audio_streams failed', exc_info=True)
         return ()
     return _normalize_audio_track_candidates(selected)
-
 
 
 def select_audio_stream(self, stream_index: int) -> bool:
@@ -133,7 +132,6 @@ def select_audio_stream(self, stream_index: int) -> bool:
     if ok:
         self._current_audio_stream_index = target_stream_index
     return ok
-
 
 
 def _bootstrap_runtime_audio_track_inventory(self) -> tuple[int, ...]:
@@ -282,7 +280,6 @@ def _finalize_runtime_audio_track_state_after_start(self) -> None:
         _prime_audio_track_candidates(self)
 
 
-
 def _retry_play_with_audio_fallback(self, initial_error: Exception) -> None:
     """Retry video playback with alternative audio streams in a bounded deterministic order.
 
@@ -337,7 +334,6 @@ def _retry_play_with_audio_fallback(self, initial_error: Exception) -> None:
             )
 
     raise last_error
-
 
 
 def play_media(self, path: str, duration_hint: float = 0.0) -> None:
@@ -402,164 +398,6 @@ def play_media(self, path: str, duration_hint: float = 0.0) -> None:
         )
 
 
-
-def pause(self) -> None:
-    """Mette in pausa il video corrente, se possibile."""
-    if self._adapter and self._state == VideoState.PLAYING:
-        try:
-            logger.debug('[VideoController] pause() requested')
-            self._adapter.pause()
-            self._update_state(VideoState.PAUSED)
-            self._publish_event(AudioEventType.VIDEO_PLAYBACK_PAUSED, {})
-        except ADAPTER_EXCEPTIONS as exc:
-            logger.error('[VideoController] Failed to pause video: %s', exc, exc_info=True)
-
-
-
-def resume(self) -> None:
-    """Riprende la riproduzione del video corrente, se possibile."""
-    if self._adapter and self._state == VideoState.PAUSED:
-        try:
-            logger.debug('[VideoController] resume() requested')
-            self._adapter.resume()
-            self._update_state(VideoState.PLAYING)
-            self._publish_event(AudioEventType.VIDEO_PLAYBACK_RESUMED, {})
-        except ADAPTER_EXCEPTIONS as exc:
-            logger.error('[VideoController] Failed to resume video: %s', exc, exc_info=True)
-
-
-
-def stop(self, close_adapter: bool = False) -> None:
-    """
-    Ferma la riproduzione attuale.
-    Se close_adapter=True chiude anche l'adapter video.
-    """
-    if self._shutting_down:
-        if close_adapter:
-            self._close_adapter_internal()
-        return
-
-    if close_adapter:
-        self._close_adapter_internal()
-        return
-
-    if self._adapter and self._state in (VideoState.PLAYING, VideoState.PAUSED):
-        try:
-            logger.debug('[VideoController] stop(close_adapter=%s) requested', close_adapter)
-            self._adapter.stop()
-            self._update_state(VideoState.STOPPED)
-        except ADAPTER_EXCEPTIONS as exc:
-            logger.warning('[VideoController] stop() failed: %s', exc, exc_info=True)
-
-    self._publish_event(
-        AudioEventType.VIDEO_PLAYBACK_STOPPED,
-        {},
-        require_ui_thread=True,
-    )
-
-
-
-def set_volume(self, volume: float) -> None:
-    """Imposta il volume del video."""
-    try:
-        normalized_volume = max(0.0, min(1.0, float(volume)))
-    except FORMAT_EXCEPTIONS:
-        normalized_volume = 1.0
-    self._volume = normalized_volume
-
-    if self._adapter:
-        try:
-            logger.debug('[VideoController] set_volume(%.3f)', normalized_volume)
-            self._adapter.set_volume(normalized_volume)
-        except ADAPTER_EXCEPTIONS as exc:
-            logger.error('[VideoController] Failed to set volume: %s', exc, exc_info=True)
-
-
-
-def get_duration(self) -> float:
-    """Ritorna la durata del media corrente."""
-    duration = 0.0
-    if self._adapter:
-        try:
-            duration = float(self._adapter.get_duration())
-        except ADAPTER_EXCEPTIONS:
-            duration = 0.0
-
-    if duration > 0.0:
-        return duration
-    return max(0.0, float(self._current_duration_hint or 0.0))
-
-
-
-def get_position(self) -> float:
-    """Ritorna la posizione corrente del media."""
-    if not self._adapter:
-        return 0.0
-    try:
-        return float(self._adapter.get_position())
-    except ADAPTER_EXCEPTIONS:
-        return 0.0
-
-
-
-def seek(self, position_sec: float) -> bool:
-    """Cerca all'interno del video."""
-    if not self._adapter:
-        return False
-    try:
-        self._adapter.seek(float(position_sec))
-        return True
-    except ADAPTER_EXCEPTIONS as exc:
-        logger.debug('[VideoController] seek(%s) failed: %s', position_sec, exc, exc_info=True)
-        return False
-
-
-
-def poll_end(self) -> bool:
-    """
-    Va chiamato periodicamente dal PlayerController.
-    Se la riproduzione è terminata e loop è OFF:
-     - chiude l'adapter
-     - ritorna True (per aggiornare stato player)
-    Se non è terminata o loop è ON: ritorna False.
-    """
-    if not self._adapter:
-        return False
-
-    try:
-        self._adapter.pump_events()
-    except ADAPTER_EXCEPTIONS as exc:
-        logger.warning('[VideoController] pump_events() failed: %s', exc, exc_info=True)
-
-    try:
-        ended = self._adapter.has_ended()
-    except ADAPTER_EXCEPTIONS as exc:
-        logger.debug('[VideoController] has_ended() check failed: %s', exc, exc_info=True)
-        return False
-
-    if not ended:
-        return False
-
-    logger.info('[VideoController] Video ended (loop=%s)', self._loop_enabled)
-
-    if self._loop_enabled:
-        return False
-
-    self._publish_event(
-        AudioEventType.VIDEO_PLAYBACK_ENDED,
-        {
-            'path': self._current_path,
-            'position': self.get_position(),
-            'duration': self.get_duration(),
-        },
-        require_ui_thread=True,
-    )
-
-    self._close_adapter_internal()
-    return True
-
-
-
 _VIDEO_CONTROLLER_PLAYBACK_METHODS: tuple[tuple[str, Callable[..., Any]], ...] = (
     ("get_audio_track_candidates", get_audio_track_candidates),
     ("set_audio_track_candidates", set_audio_track_candidates),
@@ -573,7 +411,11 @@ _VIDEO_CONTROLLER_PLAYBACK_METHODS: tuple[tuple[str, Callable[..., Any]], ...] =
     ("get_duration", get_duration),
     ("get_position", get_position),
     ("seek", seek),
+    ("get_seek_receipt", get_seek_receipt),
     ("poll_end", poll_end),
+    ("observe_end", observe_end),
+    ("finalize_video_end", finalize_video_end),
+    ("pump_pending_events", pump_pending_events),
 )
 
 

@@ -18,7 +18,7 @@ from .definitions import (
     MFSTARTUP_FULL,
     MF_VERSION,
 )
-from .com_helpers import ComPtr, _check_hr, _hr_to_hex
+from .com_helpers import ComPtr, _check_hr
 from .iid_registry import (
     CLSID_MFMediaEngineClassFactory,
     IID_IMFMediaEngineClassFactory,
@@ -175,10 +175,6 @@ def MFCreateAttributes(initial_size: int = 8) -> ComPtr:
         raise RuntimeError("MFCreateAttributes ha restituito un puntatore nullo")
 
     return ComPtr(p_attributes, IMFAttributes)
-
-
-def _hresult_hex(hr: int) -> str:
-    return _hr_to_hex(hr)
 
 
 def _co_create_media_engine_class_factory_raw() -> POINTER(IMFMediaEngineClassFactory):

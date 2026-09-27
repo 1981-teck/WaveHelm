@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from src.model.component_database.playlist_mirror_journal import MAX_RECOVERY_BATCH, PlaylistMirrorJob, PlaylistMirrorJournal, PlaylistMirrorJournalError
+from src.utils.durable_io import durable_replace, sync_parent_directory
 from src.utils.exceptions import WaveHelmError
 from src.utils.helpers import safe_filename
 
@@ -237,15 +238,13 @@ def _write_all(file_descriptor: int, payload: bytes) -> None:
         offset += written
 
 def _sync_parent_directory(parent: Path) -> None:
-    """Persist the directory entry on POSIX after an atomic replacement."""
-    if os.name == "nt":
-        return
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    directory_fd = os.open(parent, flags)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
+    """Persist a replaced directory entry using the shared durability primitive."""
+    sync_parent_directory(parent)
+
+
+def _replace_file_durable(source: Path, target: Path) -> None:
+    """Replace one mirror file with platform-appropriate durability semantics."""
+    durable_replace(source, target)
 
 def _cleanup_temporary_file(file_descriptor: int | None, temporary_path: Path | None) -> None:
     """Best-effort cleanup that never masks the original persistence error."""
@@ -285,7 +284,7 @@ def _write_playlist_payload_atomic(
         os.fsync(file_descriptor)
         os.close(file_descriptor)
         file_descriptor = None
-        os.replace(temporary_path, target)
+        _replace_file_durable(temporary_path, target)
         temporary_path = None
         committed = True
         _sync_parent_directory(target.parent)

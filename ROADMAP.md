@@ -1,10 +1,10 @@
 # WaveHelm engineering roadmap
 
-This roadmap describes the next engineering work after the 1.0.1 source-release correction. It is not a promise of dates or release scope.
+This roadmap describes engineering work after the public `1.0.1` source-release correction. It is not a promise of dates or release scope.
 
-## Current baseline: 1.0.1
+## Current release-integration candidate: 1.0.2 (RI03; publication pending)
 
-WaveHelm 1.0.1 is the corrected, development-ready source baseline. It retains the complete test suite, restores required third-party license texts, aligns the Python compatibility contract with pinned dependencies, adds public CI and supply-chain checks, and removes generated runtime artifacts from release archives.
+The current release-integration candidate is prepared with the `1.0.2` identity. The latest public source release remains `1.0.1` until final qualification and explicit maintainer publication. The public `1.0.1` baseline retains the complete test suite, required third-party license texts, the declared Python compatibility contract, public CI and supply-chain checks, and release-archive hygiene.
 
 ## Priority 0 — settings and maintenance safety
 

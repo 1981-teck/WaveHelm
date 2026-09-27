@@ -1,9 +1,0 @@
-CREATE TABLE IF NOT EXISTS favorites (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    path TEXT NOT NULL UNIQUE,
-    title TEXT NOT NULL,
-    media_type TEXT NOT NULL,
-    duration REAL NOT NULL,
-    metadata TEXT,
-    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);

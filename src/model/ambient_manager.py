@@ -89,7 +89,7 @@ class AmbientManager:
         self._path_display_map: Dict[str, str] = {}
         self._path_sound_id_map: Dict[str, str] = {}
         self._raw_cache: Dict[str, Tuple[np.ndarray, int]] = {}
-        self._prepared_cache: Dict[Tuple[str, int, int, float], 'pygame.mixer.Sound'] = {}
+        self._prepared_cache: Dict[Tuple[str, int, int, int], 'pygame.mixer.Sound'] = {}
 
         self._ambient_dirs = self._build_search_dirs()
         self._register_language_callback()
@@ -358,12 +358,6 @@ class AmbientManager:
             return self._sound_map[sound_name_or_path]
         self.refresh_ambient_library()
         return self._sound_map.get(sound_name_or_path)
-
-    def _restart_if_playing(self) -> None:
-        if not self._enabled or not self._source_path:
-            return
-        current = self._current_name or self._source_path
-        self.play_ambient_sound(current)
 
     # ------------------------------------------------------------------
     # Public API

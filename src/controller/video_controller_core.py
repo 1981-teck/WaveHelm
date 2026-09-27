@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import inspect
 import logging
-from typing import Any, Callable, Optional
+import time
+from typing import Any, Callable, Optional, Protocol
 
 from src.audio.audio_events import AudioEventType
+from src.playback_observation import ClockObservation, ClockOrigin, empty_clock
 from src.controller.video_controller_state import VideoState
 from src.video.adapter_factory import create_imf_media_engine_adapter
 
@@ -342,6 +344,58 @@ def shutdown(self) -> None:
 
 
 
+class _ProgressAdapter(Protocol):
+    def observe_progress(self) -> ClockObservation: ...
+
+
+class _ProgressController(Protocol):
+    _adapter: _ProgressAdapter | None
+    _state: VideoState
+    _current_path: str | None
+    _closing: bool
+    _shutting_down: bool
+
+
+def get_frame_pipeline(self, hwnd: int) -> object | None:
+    """Expose only the active adapter's exact presentation service."""
+    adapter = self._adapter
+    getter = getattr(adapter, 'get_frame_pipeline', None)
+    return getter(int(hwnd)) if callable(getter) else None
+
+
+def report_frame_error(self, error: BaseException) -> None:
+    """Forward presentation failure to the active adapter without a global registry."""
+    adapter = self._adapter
+    reporter = getattr(adapter, 'report_frame_error', None)
+    if callable(reporter):
+        reporter(error)
+
+
+
+def observe_progress(self: _ProgressController) -> ClockObservation:
+    """Return the current adapter's pair, never a stale audio/metadata fallback.
+
+    Closing, adapter replacement, source/state changes and failed adapters remain
+    nonnumeric. This observation does not acknowledge an asynchronous seek.
+    """
+    started = time.monotonic()
+    try:
+        adapter, path, state = self._adapter, self._current_path, self._state
+        if self._closing or self._shutting_down or adapter is None or state not in (
+                VideoState.PLAYING, VideoState.PAUSED, VideoState.READY):
+            return empty_clock(ClockOrigin.VIDEO_NATIVE, started, time.monotonic())
+        result = adapter.observe_progress()
+        if type(result) is not ClockObservation or result.origin is not ClockOrigin.VIDEO_NATIVE:
+            raise TypeError("Invalid video adapter clock")
+        if (self._adapter is not adapter or self._current_path != path or self._state is not state
+                or self._closing or self._shutting_down
+                or (result.source is not None and result.source != path)):
+            return result.invalidate()
+        return result
+    except ADAPTER_EXCEPTIONS as error:
+        return empty_clock(ClockOrigin.VIDEO_NATIVE, started, time.monotonic(), error=error)
+
+
 _VIDEO_CONTROLLER_CORE_METHODS: tuple[tuple[str, Callable[..., Any]], ...] = (
     ("_setup_event_subscriptions", _setup_event_subscriptions),
     ("_publish_event", _publish_event),
@@ -354,6 +408,9 @@ _VIDEO_CONTROLLER_CORE_METHODS: tuple[tuple[str, Callable[..., Any]], ...] = (
     ("set_loop", set_loop),
     ("_close_adapter_internal", _close_adapter_internal),
     ("shutdown", shutdown),
+    ("get_frame_pipeline", get_frame_pipeline),
+    ("report_frame_error", report_frame_error),
+    ("observe_progress", observe_progress),
 )
 
 

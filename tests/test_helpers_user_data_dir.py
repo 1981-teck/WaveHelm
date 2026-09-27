@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 
+import pytest
+
 from src.utils import helpers
 
 
@@ -111,3 +113,29 @@ def test_get_user_data_dir_falls_back_to_home_scoped_dir_when_primary_creation_f
 
     assert user_data_dir == fallback_dir
     assert fallback_dir in mkdir_calls
+
+def test_get_user_data_dir_fails_closed_when_primary_and_fallback_creation_fail(monkeypatch, tmp_path):
+    home = tmp_path / 'home'
+    appdata = tmp_path / 'roaming'
+    primary_dir = appdata / 'WaveHelmQA'
+    fallback_dir = home / '.wavehelmqa_data'
+    attempted_paths: list[Path] = []
+
+    def failing_mkdir(self, parents=True, exist_ok=True):
+        path = Path(self)
+        attempted_paths.append(path)
+        if path in {primary_dir, fallback_dir}:
+            raise OSError(f'cannot create {path.name}')
+
+    monkeypatch.setattr(helpers.Path, 'mkdir', failing_mkdir)
+
+    with pytest.raises(OSError, match='cannot create .wavehelmqa_data'):
+        helpers.get_user_data_dir(
+            os_name='nt',
+            env={'APPDATA': str(appdata)},
+            home_dir=home,
+            app_name='WaveHelmQA',
+        )
+
+    assert attempted_paths == [primary_dir, fallback_dir]
+    assert home not in attempted_paths

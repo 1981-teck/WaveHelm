@@ -2,25 +2,38 @@ from __future__ import annotations
 
 import importlib
 import logging
-import os
-from pathlib import Path
 from typing import Any
 
 from src.audio.audio_event_models import AudioEventType
 from src.model.media_file import MediaFile
 from src.utils.helpers import is_audio_file, is_video_file
+from src.ui_wx.collection_view_support import (
+    canonical_media_path,
+    collect_media_file_paths,
+    playlist_id,
+    playlist_name,
+    playlist_track_row_values,
+    select_file_paths,
+    select_folder_path,
+    selected_items,
+    selected_media_paths,
+)
 from src.ui_wx.common import (
-    WX_CALLBACK_EXCEPTIONS,
-    apply_colors,
     create_flow_sizer,
+    format_duration,
+    refresh_now_playing_highlight,
+    set_view_feedback,
+    subscribe_event,
     get_localized_text,
-    get_theme_colors,
-    persist_listctrl_column_widths,
     register_callback,
-    restore_listctrl_column_widths,
     set_label_text,
-    set_listctrl_column_label,
-    unregister_callback,
+)
+from src.ui_wx.view_presentation_support import (
+    apply_collection_view_theme,
+    persist_column_width_groups,
+    release_view_lifecycle,
+    restore_column_width_groups,
+    set_translated_column_labels,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +50,9 @@ class PlaylistView:
     2. Dialog APIs or controller capabilities may be absent on a partial runtime, so actions degrade to bounded feedback instead of a broken flow.
     3. Player state events can reference paths that are no longer rendered, so highlight refresh is best-effort and never crashes the page.
     """
+
+    FEEDBACK_EVENT_TYPE = AudioEventType.FEEDBACK_MESSAGE
+    _set_feedback = set_view_feedback
 
     PLAYLIST_COLUMN_WIDTHS_SETTING_KEY = 'ui_playlist_playlist_column_widths'
     TRACK_COLUMN_WIDTHS_SETTING_KEY = 'ui_playlist_track_column_widths'
@@ -208,15 +224,15 @@ class PlaylistView:
         self._subscribe(AudioEventType.PLAYER_STATE_CHANGED, self._on_player_state_changed)
 
     def _subscribe(self, event_type: AudioEventType, callback: Any) -> None:
-        subscribe = getattr(self.event_bus, 'subscribe', None)
-        if not callable(subscribe):
-            return
-        try:
-            subscription = subscribe(event_type, callback)
-        except PLAYLIST_VIEW_EXCEPTIONS:
-            logger.debug('PlaylistView subscription failed for %s.', event_type, exc_info=True)
-            return
-        self._subscriptions.append((event_type, subscription))
+        subscribe_event(
+            self.event_bus,
+            self._subscriptions,
+            event_type,
+            callback,
+            exceptions=PLAYLIST_VIEW_EXCEPTIONS,
+            logger=logger,
+            view_name='PlaylistView',
+        )
 
     def _t(self, key: str, default: str | None = None, **kwargs: Any) -> str:
         fallback = default if default is not None else key
@@ -237,44 +253,23 @@ class PlaylistView:
         self._update_status_label()
 
     def _set_table_labels(self) -> None:
-        playlist_columns = getattr(self.playlist_table, 'columns', None)
-        for index, (name, key) in enumerate(self.PLAYLIST_COLUMNS):
-            label = self._t(key, name.title())
-            set_listctrl_column_label(self.playlist_table, index, label)
-        track_columns = getattr(self.track_table, 'columns', None)
-        for index, (name, key) in enumerate(self.TRACK_COLUMNS):
-            label = self._t(key, name.title())
-            set_listctrl_column_label(self.track_table, index, label)
+        set_translated_column_labels(self.playlist_table, self.PLAYLIST_COLUMNS, self._t)
+        set_translated_column_labels(self.track_table, self.TRACK_COLUMNS, self._t)
+
+    def _column_width_groups(self) -> tuple[tuple[object, str, int], ...]:
+        return (
+            (self.playlist_table, self.PLAYLIST_COLUMN_WIDTHS_SETTING_KEY, len(self.PLAYLIST_COLUMNS)),
+            (self.track_table, self.TRACK_COLUMN_WIDTHS_SETTING_KEY, len(self.TRACK_COLUMNS)),
+        )
 
     def _restore_column_widths(self) -> None:
-        restore_listctrl_column_widths(
-            self.playlist_table,
-            self.settings_manager,
-            self.PLAYLIST_COLUMN_WIDTHS_SETTING_KEY,
-            len(self.PLAYLIST_COLUMNS),
-        )
-        restore_listctrl_column_widths(
-            self.track_table,
-            self.settings_manager,
-            self.TRACK_COLUMN_WIDTHS_SETTING_KEY,
-            len(self.TRACK_COLUMNS),
-        )
+        restore_column_width_groups(self.settings_manager, self._column_width_groups())
 
     def _persist_playlist_column_widths(self) -> None:
-        persist_listctrl_column_widths(
-            self.playlist_table,
-            self.settings_manager,
-            self.PLAYLIST_COLUMN_WIDTHS_SETTING_KEY,
-            len(self.PLAYLIST_COLUMNS),
-        )
+        persist_column_width_groups(self.settings_manager, self._column_width_groups()[:1])
 
     def _persist_track_column_widths(self) -> None:
-        persist_listctrl_column_widths(
-            self.track_table,
-            self.settings_manager,
-            self.TRACK_COLUMN_WIDTHS_SETTING_KEY,
-            len(self.TRACK_COLUMNS),
-        )
+        persist_column_width_groups(self.settings_manager, self._column_width_groups()[1:])
 
     def _on_playlist_table_column_resized(self, _event: Any) -> None:
         self._persist_playlist_column_widths()
@@ -284,30 +279,27 @@ class PlaylistView:
 
 
     def update_theme_colors(self, *_: Any) -> None:
-        colors = get_theme_colors(self.theme_manager)
-        background = colors.get('panel_bg') or colors.get('bg_color')
-        foreground = colors.get('text_color')
-        accent = colors.get('button_color') or background
-        for widget in (
-            self.panel,
-            self.title_label,
-            self.playlist_label,
-            self.track_label,
-            self.playlist_table,
-            self.track_table,
-            self.status_label,
-            self.feedback_label,
-        ):
-            apply_colors(widget, background=background, foreground=foreground)
-        for button in (
-            self.create_button,
-            self.delete_button,
-            self.add_tracks_button,
-            self.add_folder_button,
-            self.remove_tracks_button,
-            self.play_button,
-        ):
-            apply_colors(button, background=accent, foreground=foreground)
+        colors = apply_collection_view_theme(
+            self.theme_manager,
+            widgets=(
+                self.panel,
+                self.title_label,
+                self.playlist_label,
+                self.track_label,
+                self.playlist_table,
+                self.track_table,
+                self.status_label,
+                self.feedback_label,
+            ),
+            buttons=(
+                self.create_button,
+                self.delete_button,
+                self.add_tracks_button,
+                self.add_folder_button,
+                self.remove_tracks_button,
+                self.play_button,
+            ),
+        )
         self._refresh_now_playing_highlight(colors)
 
     def reload_playlists(self) -> None:
@@ -332,14 +324,10 @@ class PlaylistView:
         return [item for item in items if isinstance(item, dict)]
 
     def _playlist_id(self, playlist: dict[str, Any]) -> int | None:
-        try:
-            return int(playlist.get('id'))
-        except PLAYLIST_VIEW_EXCEPTIONS:
-            return None
+        return playlist_id(playlist, exceptions=PLAYLIST_VIEW_EXCEPTIONS)
 
     def _playlist_name(self, playlist: dict[str, Any]) -> str:
-        value = playlist.get('name')
-        return str(value).strip() if value else ''
+        return playlist_name(playlist)
 
     def _populate_playlist_rows(self) -> None:
         self.playlist_table.DeleteAllItems()
@@ -393,84 +381,25 @@ class PlaylistView:
 
     @staticmethod
     def _canonical_path(path: str) -> str:
-        value = str(path or '').strip()
-        if not value:
-            return ''
-        if value.startswith(('http://', 'https://', 'rtsp://', 'rtmp://')):
-            return value
-        try:
-            return os.path.normcase(os.path.abspath(os.path.normpath(value)))
-        except PLAYLIST_VIEW_EXCEPTIONS:
-            return value
+        return canonical_media_path(path, exceptions=PLAYLIST_VIEW_EXCEPTIONS)
 
-    @staticmethod
-    def _lighten_color(color: str | None, *, blend: float = 0.28) -> str | None:
-        value = str(color or '').strip()
-        if len(value) != 7 or not value.startswith('#'):
-            return None
-        try:
-            red = int(value[1:3], 16)
-            green = int(value[3:5], 16)
-            blue = int(value[5:7], 16)
-        except ValueError:
-            return None
-        ratio = min(0.9, max(0.0, float(blend)))
-        red = min(255, int(round(red + (255 - red) * ratio)))
-        green = min(255, int(round(green + (255 - green) * ratio)))
-        blue = min(255, int(round(blue + (255 - blue) * ratio)))
-        return f'#{red:02x}{green:02x}{blue:02x}'
-
-    def _now_playing_row_color(self, colors: dict[str, str] | None = None) -> str | None:
-        palette = dict(colors or get_theme_colors(self.theme_manager))
-        accent = palette.get('selection_bg') or palette.get('button_color')
-        return self._lighten_color(accent) or accent
 
     def _refresh_now_playing_highlight(self, colors: dict[str, str] | None = None) -> None:
-        item_count_getter = getattr(self.track_table, 'GetItemCount', None)
-        set_background = getattr(self.track_table, 'SetItemBackgroundColour', None)
-        if not callable(item_count_getter) or not callable(set_background):
-            return
-        palette = dict(colors or get_theme_colors(self.theme_manager))
-        default_background = palette.get('panel_bg') or palette.get('bg_color')
-        highlight_background = self._now_playing_row_color(palette)
-        current_key = self._canonical_path(self._current_track_path)
-        try:
-            item_count = max(0, int(item_count_getter() or 0))
-        except PLAYLIST_VIEW_EXCEPTIONS:
-            return
-        for row_index in range(item_count):
-            row_background = default_background
-            if current_key and row_index < len(self._current_playlist_tracks):
-                media_path = getattr(self._current_playlist_tracks[row_index], 'path', '') or ''
-                if self._canonical_path(media_path) == current_key:
-                    row_background = highlight_background or default_background
-            if row_background:
-                try:
-                    set_background(row_index, row_background)
-                except PLAYLIST_VIEW_EXCEPTIONS:
-                    logger.debug('Unable to refresh PlaylistView row highlight.', exc_info=True)
-                    return
-        refresh = getattr(self.track_table, 'Refresh', None)
-        if callable(refresh):
-            try:
-                refresh()
-            except PLAYLIST_VIEW_EXCEPTIONS:
-                logger.debug('Unable to refresh PlaylistView track table after row highlight update.', exc_info=True)
+        refresh_now_playing_highlight(
+            self.track_table,
+            self._current_playlist_tracks,
+            self._current_track_path,
+            self._canonical_path,
+            self.theme_manager,
+            colors=colors,
+            exceptions=PLAYLIST_VIEW_EXCEPTIONS,
+            logger=logger,
+            view_name='PlaylistView',
+            table_name='track table',
+        )
 
     def _track_row_values(self, media: MediaFile) -> list[str]:
-        metadata = dict(getattr(media, 'metadata', {}) or {})
-        artist = str(getattr(media, 'artist', None) or metadata.get('artist', '') or '')
-        return [
-            getattr(media, 'title', '') or Path(getattr(media, 'path', '')).stem,
-            artist,
-            self._format_duration(float(getattr(media, 'duration', 0.0) or 0.0)),
-            getattr(media, 'path', '') or '',
-        ]
-
-    def _format_duration(self, seconds: float) -> str:
-        total_seconds = max(0, int(seconds or 0))
-        minutes, remaining = divmod(total_seconds, 60)
-        return f'{minutes:02d}:{remaining:02d}'
+        return playlist_track_row_values(media, duration_text=format_duration)
 
     def _selected_playlist(self) -> dict[str, Any] | None:
         index = self.playlist_table.GetFirstSelected()
@@ -479,24 +408,10 @@ class PlaylistView:
         return self._playlists[index]
 
     def _selected_track_paths(self) -> list[str]:
-        selected: list[str] = []
-        index = self.track_table.GetFirstSelected()
-        while index != -1:
-            if 0 <= index < len(self._current_playlist_tracks):
-                path = getattr(self._current_playlist_tracks[index], 'path', '') or ''
-                if path:
-                    selected.append(path)
-            index = self.track_table.GetNextSelected(index)
-        return selected
+        return selected_media_paths(self.track_table, self._current_playlist_tracks)
 
     def _selected_tracks(self) -> list[MediaFile]:
-        selected: list[MediaFile] = []
-        index = self.track_table.GetFirstSelected()
-        while index != -1:
-            if 0 <= index < len(self._current_playlist_tracks):
-                selected.append(self._current_playlist_tracks[index])
-            index = self.track_table.GetNextSelected(index)
-        return selected
+        return selected_items(self.track_table, self._current_playlist_tracks)
 
     def _on_playlist_selected(self, _event: Any | None = None) -> None:
         playlist = self._selected_playlist()
@@ -701,62 +616,35 @@ class PlaylistView:
                 destroy()
 
     def _select_file_paths(self) -> list[str]:
-        file_dialog_cls = getattr(self._wx, 'FileDialog', None)
-        if file_dialog_cls is None:
-            self._set_feedback(self._t('playlist_add_not_available', 'Add to playlist not available.'), 'orange')
-            return []
-        dialog = file_dialog_cls(self.panel, message=self._t('playlist_add_files_title', 'Select tracks to add'))
-        try:
-            if dialog.ShowModal() in _DIALOG_CANCELLED:
-                return []
-            getter = getattr(dialog, 'GetPaths', None)
-            if callable(getter):
-                return [str(path) for path in getter() if path]
-            single_getter = getattr(dialog, 'GetPath', None)
-            if callable(single_getter):
-                value = single_getter()
-                return [str(value)] if value else []
-            return []
-        finally:
-            destroy = getattr(dialog, 'Destroy', None)
-            if callable(destroy):
-                destroy()
+        return select_file_paths(
+            self._wx,
+            self.panel,
+            message=self._t('playlist_add_files_title', 'Select tracks to add'),
+            cancelled_results=_DIALOG_CANCELLED,
+            unavailable=lambda: self._set_feedback(
+                self._t('playlist_add_not_available', 'Add to playlist not available.'),
+                'orange',
+            ),
+        )
 
     def _select_folder_path(self) -> str:
-        dir_dialog_cls = getattr(self._wx, 'DirDialog', None)
-        if dir_dialog_cls is None:
-            self._set_feedback(self._t('playlist_add_not_available', 'Add to playlist not available.'), 'orange')
-            return ''
-        dialog = dir_dialog_cls(self.panel, message=self._t('playlist_add_folder_title', 'Select a folder with media files'))
-        try:
-            if dialog.ShowModal() in _DIALOG_CANCELLED:
-                return ''
-            getter = getattr(dialog, 'GetPath', None)
-            if callable(getter):
-                value = getter()
-                return str(value or '').strip()
-            getters = getattr(dialog, 'GetPaths', None)
-            if callable(getters):
-                values = [str(path).strip() for path in getters() if str(path).strip()]
-                return values[0] if values else ''
-            return ''
-        finally:
-            destroy = getattr(dialog, 'Destroy', None)
-            if callable(destroy):
-                destroy()
+        return select_folder_path(
+            self._wx,
+            self.panel,
+            message=self._t('playlist_add_folder_title', 'Select a folder with media files'),
+            cancelled_results=_DIALOG_CANCELLED,
+            unavailable=lambda: self._set_feedback(
+                self._t('playlist_add_not_available', 'Add to playlist not available.'),
+                'orange',
+            ),
+            allow_paths_fallback=True,
+        )
 
     def _collect_media_file_paths(self, folder_path: str) -> list[str]:
-        folder = Path(str(folder_path or '').strip())
-        if not folder.is_dir():
-            return []
-        media_paths: list[str] = []
-        for candidate in sorted(folder.rglob('*'), key=lambda item: str(item).lower()):
-            if not candidate.is_file():
-                continue
-            resolved = str(candidate)
-            if is_audio_file(resolved) or is_video_file(resolved):
-                media_paths.append(resolved)
-        return media_paths
+        return collect_media_file_paths(
+            folder_path,
+            is_media_file=lambda path: is_audio_file(path) or is_video_file(path),
+        )
 
     def _confirm(self, title: str, message: str) -> bool:
         style = getattr(self._wx, 'YES_NO', 0) | getattr(self._wx, 'ICON_QUESTION', 0)
@@ -775,11 +663,6 @@ class PlaylistView:
             self._t('playlist_status', 'Playlists: {playlists} | Visible tracks: {tracks}', playlists=playlist_count, tracks=track_count),
         )
 
-    def _set_feedback(self, message: str, color: str) -> None:
-        set_label_text(self.feedback_label, message)
-        publish = getattr(self.event_bus, 'publish', None)
-        if callable(publish):
-            publish(AudioEventType.FEEDBACK_MESSAGE, {'message': message, 'color': color})
 
     def _on_playlist_updated(self, payload: Any) -> None:
         playlist_id = None
@@ -818,29 +701,17 @@ class PlaylistView:
         2. Playlist and track tables can be resized independently, therefore both are sampled every time.
         3. Shutdown may run more than once, so persistence stays idempotent and best-effort.
         """
-        self._persist_playlist_column_widths()
-        self._persist_track_column_widths()
-        for event_type, subscription in tuple(self._subscriptions):
-            unsubscribe = getattr(self.event_bus, 'unsubscribe', None)
-            if callable(unsubscribe):
-                try:
-                    unsubscribe(event_type, subscription=subscription)
-                except PLAYLIST_VIEW_EXCEPTIONS:
-                    logger.debug('Unable to unsubscribe wx PlaylistView.', exc_info=True)
-        self._subscriptions.clear()
-        unregister_callback(
-            self.localization_manager,
-            'unregister_language_change_callback',
-            self.update_localization,
+        persist_column_width_groups(self.settings_manager, self._column_width_groups())
+        release_view_lifecycle(
+            event_bus=self.event_bus,
+            subscriptions=self._subscriptions,
+            exceptions=PLAYLIST_VIEW_EXCEPTIONS,
+            localization_manager=self.localization_manager,
+            localization_callback=self.update_localization,
+            theme_manager=self.theme_manager,
+            theme_callback=self.update_theme_colors,
             logger=logger,
-            message='Unable to unregister wx PlaylistView language callback.',
-        )
-        unregister_callback(
-            self.theme_manager,
-            'unregister_theme_change_callback',
-            self.update_theme_colors,
-            logger=logger,
-            message='Unable to unregister wx PlaylistView theme callback.',
+            view_name='PlaylistView',
         )
 
     def show(self) -> None:

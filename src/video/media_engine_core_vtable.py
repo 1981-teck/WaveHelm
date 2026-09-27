@@ -7,7 +7,7 @@ from ctypes import POINTER, c_double, c_void_p, cast
 from typing import Any, Optional
 
 from src.video.component_base.com_helpers import _hr_to_hex
-from src.video.component_base.definitions import IUnknown, IMFMediaEngine, _IMF_MEDIA_ENGINE_VTBL_SPECS
+from src.video.component_base.definitions import IMFMediaEngine, _IMF_MEDIA_ENGINE_VTBL_SPECS
 from src.video.component_base.utils import is_success, safe_release
 
 from .media_engine_core_shared import MediaEngineError
@@ -118,14 +118,10 @@ def _shutdown_engine_ptr(self, engine_ptr: Optional[ctypes.POINTER(IMFMediaEngin
     if not engine_ptr:
         return
 
-    try:
-        hr = int(self._call_engine_ptr_method(engine_ptr, "Shutdown"))
-    except MEDIA_ENGINE_PTR_CALL_EXCEPTIONS:
-        logger.debug("[MediaEngineCore] IMFMediaEngine::Shutdown failed.", exc_info=True)
-        return
-
+    hr = int(self._call_engine_ptr_method(engine_ptr, "Shutdown"))
     if not is_success(hr):
-        logger.debug("[MediaEngineCore] IMFMediaEngine::Shutdown returned hr=%s", _hr_to_hex(hr))
+        raise MediaEngineError(f'IMFMediaEngine::Shutdown failed hr={_hr_to_hex(hr)}')
+    logger.info('[MediaEngineCore] Native Shutdown completed hr=0x00000000')
 
 
 def _release_notify_iunknown(notify_iunknown: Optional[Any]) -> None:

@@ -101,7 +101,7 @@ def test_setting_write_failure_preserves_memory_and_disk(monkeypatch, tmp_path):
     def fail_replace(source: object, destination: object) -> None:
         raise PermissionError("simulated replace failure")
 
-    monkeypatch.setattr(setting_manager_module.os, "replace", fail_replace)
+    monkeypatch.setattr(setting_manager_module, "durable_replace", fail_replace)
 
     with pytest.raises(SettingsError, match="Unable to persist settings"):
         manager.set_setting("volume", 25)
@@ -110,6 +110,26 @@ def test_setting_write_failure_preserves_memory_and_disk(monkeypatch, tmp_path):
     assert manager.SETTINGS_FILE.read_bytes() == original_file
     assert list(manager.SETTINGS_FILE.parent.glob(".settings.json.*.tmp")) == []
 
+
+
+def test_post_replace_directory_sync_failure_keeps_memory_and_disk_aligned(
+    monkeypatch, tmp_path, caplog
+):
+    manager = _make_manager(monkeypatch, tmp_path / "app_data")
+
+    def fail_directory_sync(_parent: Path) -> None:
+        raise OSError("simulated directory sync failure")
+
+    monkeypatch.setattr(setting_manager_module, "sync_parent_directory", fail_directory_sync)
+    caplog.set_level(logging.WARNING, logger=setting_manager_module.logger.name)
+
+    manager.set_setting("volume", 25)
+
+    persisted = json.loads(manager.SETTINGS_FILE.read_text(encoding="utf-8"))
+    assert manager.get_setting("volume") == 25
+    assert persisted["volume"] == 25
+    assert "parent directory sync failed" in caplog.text
+    assert list(manager.SETTINGS_FILE.parent.glob(".settings.json.*.tmp")) == []
 
 def test_import_is_atomic_and_ignores_protected_cache_path(monkeypatch, tmp_path):
     app_data_dir = tmp_path / "app_data"

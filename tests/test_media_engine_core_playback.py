@@ -1,4 +1,5 @@
 from __future__ import annotations
+from src.video.seek_receipt import SeekSlot
 
 import threading
 import weakref
@@ -26,8 +27,10 @@ class DummyAdapter:
 class DummyCore:
     def __init__(self, adapter=None):
         self._state_lock = threading.RLock()
+        self._seek_slot = SeekSlot()
         self._shutdown_requested = False
         self._media_engine = object()
+        self._engine_generation = 1  # Explicit current engine in this native-call fixture.
         self._media_engine_ex = None
         self._source = None
         self._requested_source = None
@@ -92,7 +95,66 @@ def test_load_source_uses_com_thread_and_updates_active_source(monkeypatch):
     assert core._active_source == 'movie.mp4'
     assert core.adapter.call_requests == ['load']
     assert freed == ['bstr:movie.mp4']
-    assert [name for name, _ in core.calls[:2]] == ['SetSource', 'Load']
+    assert [name for name, _ in core.calls] == ['SetSource']
+
+
+
+def test_load_source_none_detaches_native_source_without_allocating_bstr(monkeypatch):
+    """A detach uses a null BSTR and clears only the active native source."""
+    core = DummyCore()
+    core._source = 'movie.mp4'
+    core._requested_source = 'movie.mp4'
+    core._active_source = 'movie.mp4'
+    allocations: list[str] = []
+    monkeypatch.setattr(media_engine_core_playback, '_SysAllocString', lambda src: allocations.append(src))
+
+    media_engine_core_playback.load_source(core, None)
+
+    assert core.adapter.call_requests == ['load']
+    assert allocations == []
+    assert core._active_source is None
+    assert core._source == 'movie.mp4'
+    assert core._requested_source == 'movie.mp4'
+    assert [name for name, _ in core.calls] == ['SetSource']
+    null_arg = core.calls[0][1][0]
+    assert getattr(null_arg, 'value', 'not-null') is None
+
+
+def test_repeated_load_source_does_not_issue_explicit_load(monkeypatch):
+    core = DummyCore()
+    freed = []
+    monkeypatch.setattr(media_engine_core_playback, '_SysAllocString', lambda src: f'bstr:{src}')
+    monkeypatch.setattr(media_engine_core_playback, '_SysFreeString', lambda bstr: freed.append(bstr))
+
+    sources = [f'movie-{index}.mp4' for index in range(12)]
+    for source in sources:
+        media_engine_core_playback.load_source(core, source)
+
+    assert core.adapter.call_requests == ['load'] * len(sources)
+    assert [name for name, _ in core.calls] == ['SetSource'] * len(sources)
+    assert freed == [f'bstr:{source}' for source in sources]
+    assert core._active_source == sources[-1]
+
+
+
+def test_load_source_failure_does_not_publish_active_source(monkeypatch):
+    core = DummyCore()
+    core._active_source = 'previous.mp4'
+    core.fail_names.add('SetSource')
+    freed = []
+    monkeypatch.setattr(media_engine_core_playback, '_SysAllocString', lambda src: f'bstr:{src}')
+    monkeypatch.setattr(media_engine_core_playback, '_SysFreeString', lambda bstr: freed.append(bstr))
+
+    try:
+        media_engine_core_playback.load_source(core, 'broken.mp4')
+    except RuntimeError as exc:
+        assert str(exc) == 'SetSource'
+    else:
+        raise AssertionError('SetSource failure must propagate')
+
+    assert core._active_source == 'previous.mp4'
+    assert freed == ['bstr:broken.mp4']
+    assert [name for name, _ in core.calls] == ['SetSource']
 
 
 
@@ -120,14 +182,14 @@ def test_async_playback_commands_are_posted_to_adapter():
     core = DummyCore()
     media_engine_core_playback.play(core)
     media_engine_core_playback.pause(core)
-    media_engine_core_playback.seek(core, 5.0)
+    assert media_engine_core_playback.seek(core, 5.0) is False  # No tracked/native contract in this fixture.
     media_engine_core_playback.set_loop(core, True)
     media_engine_core_playback.set_volume(core, 0.5)
     media_engine_core_playback.set_muted(core, True)
 
-    assert core.adapter.post_requests == ['play', 'pause', 'seek', 'set_loop', 'set_volume', 'set_muted']
+    assert core.adapter.post_requests == ['play', 'pause', 'set_loop', 'set_volume', 'set_muted']
     posted_names = [name for name, _ in core.calls if name in {'Play', 'Pause', 'SetCurrentTime', 'SetLoop', 'SetVolume', 'SetMuted'}]
-    assert posted_names == ['Play', 'Pause', 'SetCurrentTime', 'SetLoop', 'SetVolume', 'SetMuted']
+    assert posted_names == ['Play', 'Pause', 'SetLoop', 'SetVolume', 'SetMuted']
 
 
 

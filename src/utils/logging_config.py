@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import atexit
+import copy
 import logging
 import os
+import re
 import sys
+import traceback
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -24,16 +27,144 @@ _CLEANUP_HOOK_REGISTERED = False
 
 
 class SensitiveDataFilter(logging.Filter):
-    """Filtro per rimuovere dati sensibili dai log."""
+    """Redact declared key/value fields after resolving logging arguments.
+
+    Record message/args are normalized together; caller-owned mappings are not
+    edited. This is not detection of unlabelled credentials or every secret type.
+    """
 
     SENSITIVE_KEYS = ["password", "api_key", "token", "secret"]
+    MAX_TEXT_CHARS = 64 * 1024
+    REDACTED = "***REDACTED***"
+    FORMAT_ERROR = "[LOG_FORMAT_ERROR: message omitted; invalid logging arguments]"
+    SIZE_ERROR = "[LOG_REDACTION_LIMIT: text omitted; size budget exceeded]"
+
+    def __init__(self, name: str = "") -> None:
+        super().__init__(name)
+        keys = "|".join(re.escape(key) for key in self.SENSITIVE_KEYS)
+        self._fields = re.compile(
+            rf"(?<![\w])(?P<quote>['\"]?)(?:{keys})(?P=quote)"
+            r"(?![\w])\s*[:=]\s*",
+            re.IGNORECASE,
+        )
+
+    def _redact(self, text: str) -> str:
+        if len(text) > self.MAX_TEXT_CHARS:
+            return self.SIZE_ERROR
+        pieces: list[str] = []
+        position = 0
+        while match := self._fields.search(text, position):
+            start = match.end()
+            end = _sensitive_value_end(text, start)
+            quote = text[start:start + 1]
+            replacement = self.REDACTED
+            if quote in ("'", '"'):
+                replacement = quote + replacement + quote
+            pieces.extend((text[position:start], replacement))
+            position = end
+        pieces.append(text[position:])
+        result = "".join(pieces)
+        return result if len(result) <= self.MAX_TEXT_CHARS else self.SIZE_ERROR
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if isinstance(record.msg, str):
-            for key in self.SENSITIVE_KEYS:
-                if key in record.msg.lower():
-                    record.msg = record.msg.replace(key, "***REDACTED***")
+        try:
+            message = self._redact(record.getMessage())
+        except Exception:
+            # Dynamic logging boundary: never echo failed templates/arguments or
+            # recurse into logging. Process-control BaseExceptions still propagate.
+            message = self.FORMAT_ERROR
+        record.msg = message
+        record.args = ()
+        if "message" in record.__dict__:
+            record.message = message
         return True
+
+
+def _quoted_value_end(text: str, start: int) -> int:
+    quote = text[start]
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+        elif text[index] == quote:
+            return index + 1
+        else:
+            index += 1
+    return len(text)
+
+
+def _sensitive_value_end(text: str, start: int) -> int:
+    """Find a bounded value span; malformed quoted/compound tails are concealed."""
+    if start == len(text):
+        return start
+    index = start
+    if text[start] in ("'", '"'):
+        index = _quoted_value_end(text, start)
+    elif text[start] in "[{(":
+        index = _compound_value_end(text, start)
+    if index > start and (index == len(text) or text[index].isspace()):
+        return index
+    while index < len(text) and text[index] not in ",;&\r\n}])":
+        index += 1
+    return index
+
+
+def _compound_value_end(text: str, start: int) -> int:
+    closing = {"[": "]", "{": "}", "(": ")"}
+    stack: list[str] = []
+    index = start
+    while index < len(text):
+        char = text[index]
+        if char in ("'", '"'):
+            index = _quoted_value_end(text, index)
+            continue
+        if char in closing:
+            stack.append(closing[char])
+        elif char in "]})":
+            if not stack or stack.pop() != char:
+                return len(text)
+            if not stack:
+                return index + 1
+        index += 1
+    return len(text)
+
+
+class _SensitiveFormatter(logging.Formatter):
+    """Sanitize the final handler text, including exception and stack rendering."""
+
+    def __init__(self, delegate: logging.Formatter) -> None:
+        super().__init__()
+        self._delegate = delegate
+        self._redactor = SensitiveDataFilter()
+
+    def _exception_text(self, record: logging.LogRecord) -> str:
+        info = record.exc_info
+        if info is None:
+            return ""
+        formatter = self._delegate.formatException
+        if getattr(formatter, "__func__", None) is not logging.Formatter.formatException:
+            return self._redactor._redact(formatter(info))
+        # Keep real exception chains and frames, but isolate source-code snippets:
+        # an unterminated assignment in one frame must not consume later frames.
+        chunks: list[str] = []
+        for chunk in traceback.TracebackException(*info).format():
+            body = chunk.rstrip("\n")
+            chunks.append(self._redactor._redact(body) + chunk[len(body):])
+        return "".join(chunks).removesuffix("\n")
+
+    def format(self, record: logging.LogRecord) -> str:
+        try:
+            # The delegate may cache exception text. Do not change the original
+            # traceback, cache or caller metadata while formatting another handler.
+            snapshot = copy.copy(record)
+            if snapshot.exc_info and snapshot.exc_text is None:
+                snapshot.exc_text = self._exception_text(snapshot)
+            rendered = self._delegate.format(snapshot)
+            return self._redactor._redact(rendered)
+        except Exception:
+            # Dynamic formatter boundary: a formatter failure must not route raw
+            # arguments to Handler.handleError. No exception text is echoed.
+            return "[LOG_FORMAT_ERROR: record omitted; formatter failed]"
 
 
 def get_log_level() -> int:
@@ -57,7 +188,7 @@ def _build_file_handler(log_file: Path, formatter: logging.Formatter) -> Rotatin
         backupCount=BACKUP_COUNT,
         encoding="utf-8",
     )
-    file_handler.setFormatter(formatter)
+    file_handler.setFormatter(_SensitiveFormatter(formatter))
     file_handler.addFilter(SensitiveDataFilter())
     return file_handler
 
@@ -192,11 +323,12 @@ def setup_logging(base_dir: Path | None = None) -> Path:
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
+    console_handler.addFilter(SensitiveDataFilter())
     console_handler.setFormatter(
-        logging.Formatter(
+        _SensitiveFormatter(logging.Formatter(
             fmt="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
             datefmt="%H:%M:%S",
-        )
+        ))
     )
 
     root_logger = logging.getLogger()

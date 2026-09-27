@@ -6,6 +6,7 @@ import os
 from typing import Any, Optional
 
 from src.audio.audio_events import AudioEventType
+from src.utils.media_path_identity import same_media_path
 
 from .playback_state_manager import PlayerState
 
@@ -22,21 +23,20 @@ def _matches_current_track_path(current_track: Any, candidate_path: str) -> bool
     if not current_track or not candidate_path:
         return False
 
-    candidate_norm = str(candidate_path).strip().lower()
+    candidate_norm = str(candidate_path).strip()
     if not candidate_norm:
         return False
-
-    direct_path = str(getattr(current_track, "path", "") or "").strip().lower()
-    if direct_path and direct_path == candidate_norm:
+    direct_path = str(getattr(current_track, "path", "") or "").strip()
+    if direct_path and same_media_path(direct_path, candidate_norm):
         return True
 
     try:
         metadata = getattr(current_track, "metadata", {}) or {}
-        resolved_stream_url = str(metadata.get("_resolved_stream_url") or "").strip().lower()
+        resolved_stream_url = str(metadata.get("_resolved_stream_url") or "").strip()
     except MATCH_EXCEPTIONS:
         resolved_stream_url = ""
 
-    if resolved_stream_url and resolved_stream_url == candidate_norm:
+    if resolved_stream_url and same_media_path(resolved_stream_url, candidate_norm):
         return True
 
     return False

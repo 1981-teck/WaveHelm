@@ -1,8 +1,13 @@
 from __future__ import annotations
 import logging
+from collections.abc import Mapping
 from typing import List, Dict, Any, Optional
 
 from src.model.localization_manager import LocalizationManager
+from src.model.component_database.history_contract import (
+    DEFAULT_HISTORY_QUERY_LIMIT,
+    HistoryRecord,
+)
 from src.model.component_database import (
     DbCore,
     LibraryManager,
@@ -108,22 +113,25 @@ class DatabaseManager:
         title: str,
         media_type: str,
         duration: float,
-        metadata: Optional[Dict[str, Any]] = None,
-        additional_data: Optional[Dict[str, Any]] = None,
-    ):
+        metadata: Mapping[str, object] | None = None,
+        additional_data: Mapping[str, object] | None = None,
+    ) -> int:
+        """Persist one playback-history entry using the facade's path-first order."""
         return self.history.add_history_entry(
-            path,
-            title,
-            media_type,
-            duration,
-            metadata,
-            additional_data,
+            path=path,
+            title=title,
+            media_type=media_type,
+            duration=duration,
+            metadata=metadata,
+            additional_data=additional_data,
         )
 
-    def get_history(self, limit: int = 200) -> List[Dict[str, Any]]:
+    def get_history(
+        self, limit: int | None = DEFAULT_HISTORY_QUERY_LIMIT
+    ) -> list[HistoryRecord]:
         return self.history.get_history(limit=limit)
 
-    def clear_history(self):
+    def clear_history(self) -> int:
         return self.history.clear_history()
 
     # --- Favorites Methods ---

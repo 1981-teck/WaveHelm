@@ -1,65 +1,37 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
 import logging
-import math
 import os
 import tempfile
-from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias
 
-from src.model.localization_manager import LocalizationManager
+from src.model.localization_manager import LocalizationError, LocalizationManager
+from src.model.settings_schema import (
+    JsonValue,
+    SETTINGS_DOCUMENT_JSON_LIMITS,
+    MAX_SETTINGS_ROOT_ITEMS,
+    PORTABLE_SETTING_KEYS,
+    SettingsData,
+    SettingsSchema,
+    SettingsSnapshot,
+    read_settings_document,
+    to_settings_snapshot,
+)
+from src.utils.bounded_json import BoundedJsonError, serialize_json_bytes
+from src.utils.durable_io import durable_replace, sync_parent_directory
 from src.utils.exceptions import SettingsError
 from src.utils.helpers import get_user_data_dir
 
 logger = logging.getLogger(__name__)
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
-SettingsData: TypeAlias = dict[str, JsonValue]
-
 MANAGED_DIRECTORY_MARKER = ".wavehelm-managed"
-MAX_IMPORT_ITEMS = 256
-MAX_JSON_DEPTH = 12
-MAX_COLLECTION_ITEMS = 10_000
-
-PORTABLE_SETTING_KEYS = frozenset(
-    {
-        "language",
-        "theme",
-        "primary_color",
-        "volume",
-        "shuffle_enabled",
-        "loop_enabled",
-        "video_hw_accel_enabled",
-        "video_hw_device",
-        "video_target_fps",
-        "video_fast_seek",
-        "video_drop_late_frames",
-        "video_frame_queue_size",
-        "video_decode_threads",
-        "video_resize_quality_high",
-        "ambient_muted",
-        "ambient_volume",
-        "ambient_presets",
-        "equalizer_enabled",
-        "eq_last_preset",
-        "eq_last_gains",
-        "ui_library_column_widths",
-        "ui_playlist_playlist_column_widths",
-        "ui_playlist_track_column_widths",
-        "ui_favorites_column_widths",
-    }
-)
-PROTECTED_SETTING_KEYS = frozenset({"cache_dir"})
-
-LOAD_EXCEPTIONS = (OSError, TypeError, ValueError, json.JSONDecodeError, SettingsError)
-SERIALIZATION_EXCEPTIONS = (OSError, TypeError, ValueError)
-FORMAT_EXCEPTIONS = (TypeError, ValueError)
+MAX_IMPORT_ITEMS = MAX_SETTINGS_ROOT_ITEMS
+MAX_COLLECTION_ITEMS = MAX_SETTINGS_ROOT_ITEMS
+LOAD_EXCEPTIONS = (OSError, TypeError, ValueError, SettingsError)
+SERIALIZATION_EXCEPTIONS = (BoundedJsonError, OSError, TypeError, ValueError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,63 +43,60 @@ class SettingsImportResult:
 
 
 class SettingsManager:
-    """Persistent application settings with atomic, fail-closed writes.
+    """Persistent settings governed by one typed, fail-closed schema.
 
     Edge cases:
-    - A write can fail after a user-visible setting change has been requested.
-    - An imported file can contain unknown keys, non-JSON values, or a hostile cache path.
-    - A process interruption can occur while the settings file is being replaced.
+        1. Persisted roots can be oversized, ambiguous, or contain unknown keys.
+        2. Direct callers can pass Python values whose truthiness hides type errors.
+        3. A write can fail before or after an atomic replacement is attempted.
 
     Mitigations:
-    - Persist a complete candidate snapshot before committing it to memory.
-    - Validate imports against an explicit portable-key allowlist and ignore protected paths.
-    - Write to a same-directory temporary file, flush it, and replace atomically.
+        1. Parse bounded JSON and normalize every known key through ``SettingsSchema``.
+        2. Reject wrong top-level types and isolate all returned nested values.
+        3. Persist a complete candidate before publishing it as in-memory state.
     """
 
     def __init__(
         self,
         localization_manager: LocalizationManager | None = None,
     ) -> None:
-        self.localization_manager = localization_manager
+        self.localization_manager = (
+            localization_manager if localization_manager is not None else LocalizationManager()
+        )
         user_data_dir = Path(get_user_data_dir()).resolve()
         self.SETTINGS_FILE = user_data_dir / "settings.json"
         self._managed_cache_dir = user_data_dir / "cache"
-        self.DEFAULT_SETTINGS: SettingsData = {
-            "language": "en",
-            "theme": "System",
-            "primary_color": "blue",
-            "volume": 70,
-            "shuffle_enabled": False,
-            "loop_enabled": False,
-            "video_hw_accel_enabled": True,
-            "video_hw_device": "auto",
-            "video_target_fps": 60,
-            "video_fast_seek": True,
-            "video_drop_late_frames": True,
-            "video_frame_queue_size": 10,
-            "video_decode_threads": 0,
-            "video_resize_quality_high": False,
-            "cache_dir": str(self._managed_cache_dir),
-            "ambient_muted": False,
-            "ambient_volume": 0.4,
-            "ambient_presets": {},
-        }
+        self._schema = SettingsSchema(self._managed_cache_dir)
+        self.DEFAULT_SETTINGS: SettingsData = self._schema.default_settings()
+        self._canonicalize_language(self.DEFAULT_SETTINGS)
         self._settings: SettingsData = {}
         self.load_settings()
 
     def load_settings(self) -> None:
-        """Load settings and repair protected values to managed defaults."""
+        """Load a canonical snapshot, repairing only safe schema drift."""
         try:
             candidate, needs_persist = self._load_candidate()
-            self._ensure_managed_directories(candidate)
-            self._settings = candidate
-            if needs_persist:
-                self.save_settings()
-            logger.info("Settings loaded from %s", self.SETTINGS_FILE)
         except LOAD_EXCEPTIONS as error:
             logger.error("Failed loading settings: %s", error, exc_info=True)
             self._settings = deepcopy(self.DEFAULT_SETTINGS)
             self._recover_default_settings()
+            return
+
+        try:
+            self._ensure_managed_directories(candidate)
+            if needs_persist:
+                self._persist_snapshot(candidate)
+        except LOAD_EXCEPTIONS as error:
+            logger.error(
+                "Canonical settings rewrite failed; using the validated in-memory snapshot: %s",
+                error,
+                exc_info=True,
+            )
+            self._settings = deepcopy(candidate)
+            return
+
+        self._settings = deepcopy(candidate)
+        logger.info("Settings loaded from %s", self.SETTINGS_FILE)
 
     def _load_candidate(self) -> tuple[SettingsData, bool]:
         if not self.SETTINGS_FILE.exists():
@@ -136,26 +105,22 @@ class SettingsManager:
             raise SettingsError("The settings file cannot be a symbolic link.")
         if self.SETTINGS_FILE.resolve(strict=False) != self.SETTINGS_FILE:
             raise SettingsError("The settings file escapes application data.")
-        with self.SETTINGS_FILE.open("r", encoding="utf-8") as file_obj:
-            raw_data = json.load(file_obj)
-        if not isinstance(raw_data, dict):
-            raise ValueError("settings.json must contain a JSON object")
 
-        candidate = deepcopy(self.DEFAULT_SETTINGS)
-        protected_value_changed = False
-        for raw_key, value in raw_data.items():
-            key = self._validate_key(raw_key)
-            self._require_json_value(value, key)
-            normalized = self._normalize_setting(key, value)
-            candidate[key] = normalized
-            if key in PROTECTED_SETTING_KEYS and normalized != value:
-                protected_value_changed = True
-        return candidate, protected_value_changed
+        normalized = self._schema.normalize_persisted(
+            read_settings_document(self.SETTINGS_FILE)
+        )
+        if normalized.ignored_keys:
+            logger.warning(
+                "Ignored unsupported persisted settings: %s",
+                ", ".join(normalized.ignored_keys),
+            )
+        language_changed = self._canonicalize_language(normalized.settings, repair=True)
+        return normalized.settings, normalized.needs_persist or language_changed
 
     def _recover_default_settings(self) -> None:
         try:
             self._ensure_managed_directories(self._settings)
-            self.save_settings()
+            self._persist_snapshot(self._settings)
         except SettingsError as error:
             logger.error(
                 "Default settings could not be persisted: %s",
@@ -170,33 +135,43 @@ class SettingsManager:
     def _persist_snapshot(self, snapshot: SettingsData) -> None:
         temporary_path: Path | None = None
         try:
+            _normalized, payload = serialize_json_bytes(
+                snapshot,
+                limits=SETTINGS_DOCUMENT_JSON_LIMITS,
+                root="object",
+                indent=2,
+            )
             self.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                newline="\n",
+                mode="wb",
                 dir=self.SETTINGS_FILE.parent,
                 prefix=f".{self.SETTINGS_FILE.name}.",
                 suffix=".tmp",
                 delete=False,
             ) as file_obj:
                 temporary_path = Path(file_obj.name)
-                json.dump(
-                    snapshot,
-                    file_obj,
-                    indent=2,
-                    ensure_ascii=False,
-                    allow_nan=False,
-                )
+                file_obj.write(payload)
                 file_obj.flush()
                 os.fsync(file_obj.fileno())
-            os.replace(temporary_path, self.SETTINGS_FILE)
+            durable_replace(temporary_path, self.SETTINGS_FILE)
+            temporary_path = None
+            self._sync_settings_directory()
         except SERIALIZATION_EXCEPTIONS as error:
             self._remove_temporary_file(temporary_path)
             raise SettingsError(
                 "Unable to persist settings.",
                 details=f"{type(error).__name__}: {error}",
             ) from error
+
+    def _sync_settings_directory(self) -> None:
+        try:
+            sync_parent_directory(self.SETTINGS_FILE.parent)
+        except OSError as error:
+            logger.warning(
+                "Settings file replaced but parent directory sync failed: %s",
+                error,
+                exc_info=True,
+            )
 
     @staticmethod
     def _remove_temporary_file(temporary_path: Path | None) -> None:
@@ -222,18 +197,21 @@ class SettingsManager:
             if resolved_cache != self._managed_cache_dir:
                 raise SettingsError("The managed cache directory escapes app data.")
             self._managed_cache_dir.mkdir(parents=True, exist_ok=True)
-            marker = self._managed_cache_dir / MANAGED_DIRECTORY_MARKER
-            if marker.is_symlink():
-                raise SettingsError("The managed cache marker cannot be a link.")
-            if marker.exists() and not marker.is_file():
-                raise SettingsError("The managed cache marker must be a regular file.")
-            if not marker.exists():
-                marker.write_text("WaveHelm managed cache\n", encoding="utf-8")
+            self._ensure_cache_marker()
         except OSError as error:
             raise SettingsError(
                 "Unable to prepare the managed cache directory.",
                 details=f"{type(error).__name__}: {error}",
             ) from error
+
+    def _ensure_cache_marker(self) -> None:
+        marker = self._managed_cache_dir / MANAGED_DIRECTORY_MARKER
+        if marker.is_symlink():
+            raise SettingsError("The managed cache marker cannot be a link.")
+        if marker.exists() and not marker.is_file():
+            raise SettingsError("The managed cache marker must be a regular file.")
+        if not marker.exists():
+            marker.write_text("WaveHelm managed cache\n", encoding="utf-8")
 
     @staticmethod
     def _is_directory_link(directory: Path) -> bool:
@@ -243,46 +221,29 @@ class SettingsManager:
         return bool(callable(junction_check) and junction_check())
 
     def get_setting(self, key: str, default: JsonValue = None) -> JsonValue:
-        return self._settings.get(key, default)
+        return deepcopy(self._settings.get(key, default))
 
-    def set_setting(self, key: str, value: JsonValue) -> JsonValue:
-        normalized_key = self._validate_key(key)
-        self._require_json_value(value, normalized_key)
-        if normalized_key in PROTECTED_SETTING_KEYS:
-            self._reject_external_cache_path(value)
-
-        normalized_value = self._normalize_setting(normalized_key, value)
+    def set_setting(self, key: str, value: object) -> JsonValue:
+        normalized_key, normalized_value = self._schema.normalize_runtime(key, value)
         candidate = deepcopy(self._settings)
         candidate[normalized_key] = normalized_value
+        if normalized_key == "language":
+            self._canonicalize_language(candidate)
         self._commit_candidate(candidate)
-        return normalized_value
+        return deepcopy(candidate[normalized_key])
 
-    def apply_imported_settings(
-        self,
-        imported_settings: Mapping[str, JsonValue],
-    ) -> SettingsImportResult:
-        """Validate and persist an imported snapshot as one transaction."""
-        if len(imported_settings) > MAX_IMPORT_ITEMS:
-            raise SettingsError("The imported settings file contains too many entries.")
-
+    def apply_imported_settings(self, imported_settings: object) -> SettingsImportResult:
+        """Validate and persist all portable imported values as one transaction."""
+        normalized = self._schema.normalize_import(imported_settings)
         candidate = deepcopy(self._settings)
-        updated_keys: list[str] = []
-        ignored_keys: list[str] = []
-        for raw_key, value in imported_settings.items():
-            key = self._validate_key(raw_key)
-            self._require_json_value(value, key)
-            if key in PROTECTED_SETTING_KEYS:
-                ignored_keys.append(key)
-                continue
-            if key not in PORTABLE_SETTING_KEYS:
-                raise SettingsError(f"Unsupported imported setting: {key}")
-            candidate[key] = self._normalize_setting(key, value)
-            updated_keys.append(key)
-
-        if not updated_keys:
-            raise SettingsError("The import contains no portable settings.")
+        candidate.update(normalized.values)
+        if "language" in normalized.values:
+            self._canonicalize_language(candidate)
         self._commit_candidate(candidate)
-        return SettingsImportResult(tuple(updated_keys), tuple(ignored_keys))
+        return SettingsImportResult(
+            updated_keys=tuple(normalized.values),
+            ignored_keys=normalized.ignored_keys,
+        )
 
     def _commit_candidate(self, candidate: SettingsData) -> None:
         committed = deepcopy(candidate)
@@ -290,8 +251,40 @@ class SettingsManager:
         self._persist_snapshot(committed)
         self._settings = committed
 
-    def get_all_settings(self) -> SettingsData:
-        return deepcopy(self._settings)
+    def _canonicalize_language(
+        self,
+        candidate: SettingsData,
+        *,
+        repair: bool = False,
+    ) -> bool:
+        """Validate locale availability before any settings snapshot is committed.
+
+        Edge cases:
+            1. A syntactically valid code may not have a locale file.
+            2. Case or underscore variants may map to one canonical locale code.
+            3. A locale file may disappear or become invalid between settings operations.
+        """
+        language = candidate.get("language")
+        try:
+            canonical = self.localization_manager.validate_language(language)
+        except LocalizationError as error:
+            if not repair:
+                raise SettingsError(
+                    "Setting 'language' is not an available valid locale.",
+                    details=str(error),
+                ) from error
+            canonical = self.localization_manager.fallback_language
+            logger.warning(
+                "Persisted language %r is unavailable; repaired to %s.",
+                language,
+                canonical,
+            )
+        changed = language != canonical
+        candidate["language"] = canonical
+        return changed
+
+    def get_all_settings(self) -> SettingsSnapshot:
+        return to_settings_snapshot(self._settings)
 
     def get_exportable_settings(self) -> SettingsData:
         return {
@@ -301,79 +294,14 @@ class SettingsManager:
         }
 
     def reset_to_defaults(self) -> None:
-        candidate = deepcopy(self.DEFAULT_SETTINGS)
-        self._commit_candidate(candidate)
+        defaults = self._schema.default_settings()
+        self._canonicalize_language(defaults)
+        self._commit_candidate(defaults)
         logger.info("Settings reset to defaults")
 
     def is_ambient_muted(self) -> bool:
-        return bool(self.get_setting("ambient_muted", False))
+        value = self.get_setting("ambient_muted", False)
+        return value if type(value) is bool else False
 
     def set_ambient_muted(self, muted: bool) -> None:
-        self.set_setting("ambient_muted", bool(muted))
-
-    def _normalize_setting(self, key: str, value: JsonValue) -> JsonValue:
-        if key == "cache_dir":
-            return str(self._managed_cache_dir)
-        if key == "volume":
-            return self._bounded_int(value, default=70, minimum=0, maximum=100)
-        if key == "video_target_fps":
-            return self._bounded_int(value, default=60, minimum=1, maximum=120)
-        if key == "video_frame_queue_size":
-            return self._bounded_int(value, default=10, minimum=3, maximum=100)
-        if key == "video_decode_threads":
-            return self._bounded_int(value, default=0, minimum=0, maximum=64)
-        return value
-
-    @staticmethod
-    def _bounded_int(
-        value: JsonValue,
-        *,
-        default: int,
-        minimum: int,
-        maximum: int,
-    ) -> int:
-        try:
-            normalized = int(value)  # type: ignore[arg-type]
-        except FORMAT_EXCEPTIONS:
-            return default
-        return max(minimum, min(maximum, normalized))
-
-    @staticmethod
-    def _validate_key(raw_key: object) -> str:
-        if not isinstance(raw_key, str):
-            raise SettingsError("Setting keys must be strings.")
-        key = raw_key.strip()
-        if not key or len(key) > 128:
-            raise SettingsError("Setting keys must contain 1 to 128 characters.")
-        return key
-
-    def _reject_external_cache_path(self, value: JsonValue) -> None:
-        try:
-            requested = Path(str(value)).resolve()
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            raise SettingsError("The cache directory path is invalid.") from error
-        if requested != self._managed_cache_dir:
-            raise SettingsError("The cache directory is managed by WaveHelm.")
-
-    def _require_json_value(self, value: object, key: str) -> None:
-        if not self._is_json_value(value, depth=0):
-            raise SettingsError(f"Setting '{key}' contains an unsupported value.")
-
-    def _is_json_value(self, value: object, *, depth: int) -> bool:
-        if depth > MAX_JSON_DEPTH:
-            return False
-        if value is None or isinstance(value, (str, bool, int)):
-            return True
-        if isinstance(value, float):
-            return math.isfinite(value)
-        if isinstance(value, list):
-            return len(value) <= MAX_COLLECTION_ITEMS and all(
-                self._is_json_value(item, depth=depth + 1) for item in value
-            )
-        if isinstance(value, dict):
-            return len(value) <= MAX_COLLECTION_ITEMS and all(
-                isinstance(item_key, str)
-                and self._is_json_value(item_value, depth=depth + 1)
-                for item_key, item_value in value.items()
-            )
-        return False
+        self.set_setting("ambient_muted", muted)

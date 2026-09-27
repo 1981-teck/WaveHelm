@@ -1,0 +1,33 @@
+{
+  "schema": "wavehelm-release-integration-v1",
+  "checkpoint": "RI03",
+  "version": "1.0.2",
+  "baseline": "R5I-step08AX",
+  "baseline_version": "1.0.2.dev23",
+  "baseline_source_sha256": "4f25aefe4ff440c5b5ac91d6703cb6155e8b8a7ef7914bb5d9c6c45d01393915",
+  "status": "CANDIDATE_NOT_PUBLISHED",
+  "release_authorized": false,
+  "runtime_logic_change": false,
+  "dependencies_changed": false,
+  "windows_final_qualification": "RI02_AUTOMATED_RECONCILED_RERUN_REQUIRED",
+  "current_vulnerability_audit": "NOT_RUN",
+  "remote_commit_reconciliation": "PENDING_OWNER_FETCH",
+  "historical_owner_log": "available separately; observational only, no build-hash binding",
+  "ri01_automated_result": {
+    "focused": "1644/1644 PASS",
+    "metadata": "72/72 PASS",
+    "full_suite": "4750 PASS / 14 FAIL / 16 SKIP",
+    "build": "PASS"
+  },
+  "ri02_change_scope": "tests/probe qualification compatibility and release documentation only",
+  "ri02_automated_result": {
+    "focused": "1644/1644 PASS",
+    "metadata": "72/72 PASS",
+    "reconciliation": "129 PASS / 2 FAIL / 3 SKIP",
+    "full_suite": "4763 PASS / 2 FAIL / 16 SKIP",
+    "expected_windows_skip_set_exact": true,
+    "build": "PASS",
+    "source_unchanged": true
+  },
+  "ri03_change_scope": "single cross-platform strict-decoding regression plus release documentation; runtime/dependencies unchanged"
+}

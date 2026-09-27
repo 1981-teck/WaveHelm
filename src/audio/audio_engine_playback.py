@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import logging
+import math
+import time
 from pathlib import Path
 from typing import Any, Dict, Tuple
+from src.audio.audio_engine_shared import (
+    AudioCompletionOwner, AudioClockOwner, poll_audio_completion, read_audio_clock,
+)
+from src.playback_observation import ClockObservation, ClockOrigin, empty_clock
 
 import pygame
 import soundfile as sf
@@ -16,8 +22,7 @@ from src.utils.media_metadata import (
 
 from src.audio.audio_engine_shared import VIDEO_EXTS, normalize_loop_position
 from src.audio.audio_engine_playback_support import (
-    EVENT_BUS_EXCEPTIONS,
-    MIXER_EXCEPTIONS,
+    MIXER_EXCEPTIONS, AudioSeekOwner,
     handle_video_selection,
     prepare_file_selection,
     publish_audio_loaded_events,
@@ -303,6 +308,25 @@ def stop(self) -> None:
 
 
 
+def poll_end(self: AudioCompletionOwner) -> bool | None:
+    """Return True only for observed idle playback; errors are unknown, not ended."""
+    try:
+        return poll_audio_completion(self, pygame.mixer)
+    except (pygame.error, AttributeError, RuntimeError, TypeError, ValueError, OSError) as exc:
+        logger.debug("Audio completion query failed: %s", exc, exc_info=True)
+        return None
+
+
+
+def observe_progress(self: AudioClockOwner) -> ClockObservation:
+    """Expose native errors as typed observations, not a cached or invented zero."""
+    started = time.monotonic()
+    try:
+        return read_audio_clock(self, pygame.mixer)
+    except (pygame.error, AttributeError, RuntimeError, TypeError, ValueError, OSError, OverflowError) as error:
+        return empty_clock(ClockOrigin.AUDIO_MIXER, started, time.monotonic(), error=error)
+
+
 def is_playing(self) -> bool:
     """Check if currently playing."""
     try:
@@ -349,21 +373,36 @@ def get_position(self) -> float:
 
 
 
-def seek(self, position_sec: float) -> None:
-    """Seek to the specified position in seconds."""
-    position_sec = max(0.0, float(position_sec))
-    self._current_position = position_sec
+def seek(self: AudioSeekOwner, position_sec: float) -> bool:
+    """Forward a validated offset; True is mixer admission, not decoder attestation.
 
-    play_loops = _resolve_play_loops(self)
+    Invalid targets have no side effects. A failed native seek emits no SEEK
+    event. Paused seeking keeps the spectrum worker stopped. Serial fencing
+    prevents pre/in-flight clocks from being accepted, including same-target ABA.
+    """
+    if type(position_sec) not in (int, float) or not self._current_file:
+        return False
     try:
-        restore_playback_after_seek(self, position_sec, play_loops)
-        self._current_play_uses_native_loop = bool(play_loops == -1)
-        self._start_progress_loop()
-        _publish_bus_event(
-            self,
-            AudioEventType.SEEK,
-            {'position': position_sec},
-            context='Failed to publish SEEK event',
-        )
-    except (pygame.error, TypeError, ValueError, AttributeError) as exc:
-        logger.warning('Seek failed: %s', exc, exc_info=True)
+        seconds = float(position_sec)
+        if not math.isfinite(seconds):
+            return False
+        serial = getattr(self, '_audio_seek_serial', 0)
+        if type(serial) is not int or serial < 0 or serial % 2 != 0:
+            return False
+        position = max(0.0, seconds)
+        play_loops = _resolve_play_loops(self)
+        self._audio_seek_serial = serial + 1
+        try:
+            restore_playback_after_seek(self, position, play_loops)
+            self._current_play_uses_native_loop = bool(play_loops == -1)
+        finally:
+            self._audio_seek_serial = serial + 2
+        if not self._is_paused:
+            self._start_progress_loop()
+        _publish_bus_event(self, AudioEventType.SEEK, {'position': position},
+                           context='Failed to publish SEEK event')
+        return True
+    except (pygame.error, TypeError, ValueError, AttributeError, RuntimeError,
+            OverflowError) as exc:
+        logger.warning('Seek rejected: %s', exc, exc_info=True)
+        return False

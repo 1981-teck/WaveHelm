@@ -1,12 +1,21 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Final, TypeAlias
+
+ThemeColors: TypeAlias = dict[str, str]
+ThemeCatalog: TypeAlias = dict[str, ThemeColors]
+BUILTIN_COLOR_THEME_NAMES: Final[tuple[str, ...]] = (
+    "blue",
+    "green",
+    "dark-blue",
+    "sweet-pink",
+    "red",
+    "orange",
+    "purple",
+)
 
 
-BUILTIN_COLOR_THEME_NAMES = ["blue", "green", "dark-blue", "sweet-pink", "red", "orange", "purple"]
-
-
-def get_builtin_themes() -> Dict[str, Dict[str, str]]:
+def get_builtin_themes() -> ThemeCatalog:
     return {
             "dark": {
                 "bg_color": "#1e1e1e",

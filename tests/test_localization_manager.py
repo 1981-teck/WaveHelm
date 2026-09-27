@@ -5,7 +5,14 @@ import logging
 import uuid
 from pathlib import Path
 
-from src.model.localization_manager import LocalizationManager, _resolve_locales_dir
+import pytest
+
+from src.model.localization_manager import (
+    MAX_LOCALE_DOCUMENT_BYTES,
+    LocalizationError,
+    LocalizationManager,
+    _resolve_locales_dir,
+)
 
 WORKSPACE_TMP = Path(__file__).resolve().parent / '_tmp_locales'
 WORKSPACE_TMP.mkdir(exist_ok=True)
@@ -184,3 +191,214 @@ def test_spanish_and_french_locales_translate_playlist_and_favorites_visible_lab
     assert fr['playlist_tab'] == 'Liste de lecture'
     assert fr['module_favorites'] == 'Favoris'
     assert fr['module_playlists'] == 'Listes de lecture'
+
+
+@pytest.mark.parametrize(
+    'language',
+    (
+        '../secret',
+        r'..\secret',
+        '/tmp/secret',
+        r'C:\secret',
+        'en/../../secret',
+        '%2e%2e%2fsecret',
+        'en\x00escape',
+    ),
+)
+def test_language_boundary_rejects_path_like_values_without_state_change(language: str) -> None:
+    locales_dir = _make_locales_dir()
+    (locales_dir / 'en.json').write_text(
+        json.dumps({'_language_name': 'English', 'token': 'SAFE'}),
+        encoding='utf-8',
+    )
+    secret_file = locales_dir.parent / 'secret.json'
+    secret_file.write_text(json.dumps({'token': 'OUTSIDE'}), encoding='utf-8')
+    manager = LocalizationManager(locales_dir=locales_dir)
+
+    with pytest.raises(LocalizationError):
+        manager.set_language(language)
+
+    assert manager.get_current_language() == 'en'
+    assert manager.get_text('token') == 'SAFE'
+    assert manager._load_language_file(language) == {}
+
+
+def test_inventory_skips_non_object_nested_numeric_and_malformed_locales() -> None:
+    locales_dir = _make_locales_dir()
+    (locales_dir / 'en.json').write_text(
+        json.dumps({'_language_name': 'English', 'hello': 'Hello'}),
+        encoding='utf-8',
+    )
+    (locales_dir / 'list.json').write_text('[]', encoding='utf-8')
+    (locales_dir / 'nested.json').write_text(
+        json.dumps({'_language_name': 'Nested', 'hello': {'value': 'bad'}}),
+        encoding='utf-8',
+    )
+    (locales_dir / 'numeric.json').write_text(
+        json.dumps({'_language_name': 'Numeric', 'hello': 123}),
+        encoding='utf-8',
+    )
+    (locales_dir / 'broken.json').write_text('{ invalid', encoding='utf-8')
+    manager = LocalizationManager(locales_dir=locales_dir)
+
+    assert manager.get_available_languages() == {'en': 'English'}
+    for language in ('list', 'nested', 'numeric', 'broken'):
+        assert manager._load_language_file(language) == {}
+
+
+def test_inventory_skips_duplicate_nonstandard_and_oversized_documents() -> None:
+    locales_dir = _make_locales_dir()
+    (locales_dir / 'en.json').write_text(
+        json.dumps({'_language_name': 'English', 'hello': 'Hello'}),
+        encoding='utf-8',
+    )
+    (locales_dir / 'duplicate.json').write_text(
+        '{"_language_name":"First","_language_name":"Second"}',
+        encoding='utf-8',
+    )
+    (locales_dir / 'constant.json').write_text(
+        '{"_language_name":"Constant","value":NaN}',
+        encoding='utf-8',
+    )
+    oversized = b'{"_language_name":"Large","value":"' + (
+        b'x' * MAX_LOCALE_DOCUMENT_BYTES
+    ) + b'"}'
+    (locales_dir / 'large.json').write_bytes(oversized)
+    manager = LocalizationManager(locales_dir=locales_dir)
+
+    assert manager.get_available_languages() == {'en': 'English'}
+    for language in ('duplicate', 'constant', 'large'):
+        with pytest.raises(LocalizationError):
+            manager.validate_language(language)
+
+
+def test_language_codes_are_canonical_and_failed_switch_is_atomic() -> None:
+    locales_dir = _make_locales_dir()
+    (locales_dir / 'en.json').write_text(
+        json.dumps({'_language_name': 'English', 'hello': 'Hello'}),
+        encoding='utf-8',
+    )
+    (locales_dir / 'fr.json').write_text(
+        json.dumps({'_language_name': 'Français', 'hello': 'Bonjour'}),
+        encoding='utf-8',
+    )
+    manager = LocalizationManager(locales_dir=locales_dir)
+    callbacks = []
+    manager.register_language_change_callback(lambda language: callbacks.append(language))
+
+    manager.set_language('FR')
+    assert manager.get_current_language() == 'fr'
+    assert manager.get_text('hello') == 'Bonjour'
+
+    with pytest.raises(LocalizationError, match='not available'):
+        manager.set_language('de')
+
+    assert manager.get_current_language() == 'fr'
+    assert manager.get_text('hello') == 'Bonjour'
+    assert callbacks == ['fr']
+
+
+def test_locale_file_and_root_symlinks_are_rejected() -> None:
+    root = _make_locales_dir().parent / f'symlink_case_{uuid.uuid4().hex}'
+    locales_dir = root / 'locales'
+    locales_dir.mkdir(parents=True)
+    (locales_dir / 'en.json').write_text(
+        json.dumps({'_language_name': 'English', 'token': 'SAFE'}),
+        encoding='utf-8',
+    )
+    outside = root / 'evil.json'
+    outside.write_text(
+        json.dumps({'_language_name': 'Evil', 'token': 'OUTSIDE'}),
+        encoding='utf-8',
+    )
+    locale_link = locales_dir / 'evil.json'
+    root_link = root / 'linked_locales'
+    try:
+        locale_link.symlink_to(outside)
+        root_link.symlink_to(locales_dir, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip('Symbolic links are not available in this environment.')
+
+    manager = LocalizationManager(locales_dir=locales_dir)
+    assert manager.get_available_languages() == {'en': 'English'}
+    with pytest.raises(LocalizationError):
+        manager.set_language('evil')
+    with pytest.raises(LocalizationError, match='link or junction'):
+        LocalizationManager(locales_dir=root_link)
+
+
+def test_hard_linked_locale_is_not_accepted_as_an_allowlisted_source() -> None:
+    root = _make_locales_dir().parent / f'hardlink_case_{uuid.uuid4().hex}'
+    locales_dir = root / 'locales'
+    locales_dir.mkdir(parents=True)
+    (locales_dir / 'en.json').write_text(
+        json.dumps({'_language_name': 'English'}),
+        encoding='utf-8',
+    )
+    outside = root / 'de.json'
+    outside.write_text(json.dumps({'_language_name': 'Hard link'}), encoding='utf-8')
+    linked = locales_dir / 'de.json'
+    try:
+        linked.hardlink_to(outside)
+    except (NotImplementedError, OSError):
+        pytest.skip('Hard links are not available in this environment.')
+
+    manager = LocalizationManager(locales_dir=locales_dir)
+    assert manager.get_available_languages() == {'en': 'English'}
+    with pytest.raises(LocalizationError, match='Hard-linked'):
+        manager.validate_language('de')
+
+
+
+def test_prepared_locale_is_immutable_owned_and_activates_without_reopening_file() -> None:
+    first_dir = _make_locales_dir()
+    second_dir = _make_locales_dir()
+    for directory in (first_dir, second_dir):
+        (directory / 'en.json').write_text(
+            json.dumps({'_language_name': 'English', 'hello': 'Hello'}),
+            encoding='utf-8',
+        )
+        (directory / 'fr.json').write_text(
+            json.dumps({'_language_name': 'Français', 'hello': 'Bonjour'}),
+            encoding='utf-8',
+        )
+    first = LocalizationManager(locales_dir=first_dir)
+    second = LocalizationManager(locales_dir=second_dir)
+    prepared = first.prepare_language('fr')
+    (first_dir / 'fr.json').write_text('[]', encoding='utf-8')
+
+    first.activate_prepared_language(prepared)
+    assert first.get_current_language() == 'fr'
+    assert first.get_text('hello') == 'Bonjour'
+    with pytest.raises(LocalizationError, match='does not belong'):
+        second.activate_prepared_language(prepared)
+    assert second.get_current_language() == 'en'
+
+def test_reactivating_identical_prepared_locale_is_a_noop(tmp_path: Path) -> None:
+    (tmp_path / 'en.json').write_text(
+        json.dumps({'_language_name': 'English', 'token': 'Hello'}), encoding='utf-8'
+    )
+    manager = LocalizationManager(locales_dir=tmp_path, fallback_language='en')
+    calls = []
+    manager.register_language_change_callback(lambda: calls.append('called'))
+
+    manager.activate_prepared_language(manager.prepare_language('EN'))
+
+    assert manager.get_current_language() == 'en'
+    assert manager.get_text('token') == 'Hello'
+    assert calls == []
+
+def test_replacing_the_locales_root_is_detected_fail_closed(tmp_path: Path) -> None:
+    root = tmp_path / 'locales'
+    root.mkdir()
+    (root / 'en.json').write_text(json.dumps({'token': 'SAFE'}), encoding='utf-8')
+    manager = LocalizationManager(locales_dir=root, fallback_language='en')
+    displaced = tmp_path / 'locales-original'
+    root.rename(displaced)
+    root.mkdir()
+    (root / 'en.json').write_text(json.dumps({'token': 'REPLACED'}), encoding='utf-8')
+
+    with pytest.raises(LocalizationError, match='identity changed'):
+        manager.prepare_language('en')
+
+    assert manager.get_text('token') == 'SAFE'

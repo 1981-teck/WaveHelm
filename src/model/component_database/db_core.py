@@ -1,233 +1,389 @@
 from __future__ import annotations
-import sqlite3
-import logging
-import threading
-from typing import List, Optional, Tuple, Union, Any, Dict
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+import logging
+from pathlib import Path
+from types import TracebackType
+import sqlite3
+import sys
+import threading
+
+from src.model.component_database.core_schema import (
+    CORE_SCHEMA_VERSION,
+    ensure_core_schema,
+)
+from src.model.component_database.db_primitives import (
+    DbWriteResult,
+    SerializedConnectionGate,
+    SharedConnectionBoundary,
+    SharedTransactionBoundary,
+    TransactionMode,
+    cleanup_durable_connection,
+    resolve_database_path,
+)
 from src.model.localization_manager import LocalizationManager
-from src.utils.exceptions import DatabaseError
+from src.utils.exceptions import DatabaseError, IntegrityError
 from src.utils.helpers import get_user_data_dir
+
 
 logger = logging.getLogger(__name__)
 
 DB_CONFIG_EXCEPTIONS = (sqlite3.Error,)
 DB_QUERY_ARGUMENT_EXCEPTIONS = (TypeError, ValueError)
-DB_LAST_CHANGES_EXCEPTIONS = (AttributeError, IndexError, KeyError, sqlite3.Error, TypeError, ValueError)
 
 
 class DbCore:
-    _instance = None
+    """Own the process-wide WaveHelm SQLite connection and typed primitives.
+
+    Edge cases:
+        1. Reinitialization with a different path or localization boundary fails.
+        2. A failed first initialization leaves the singleton reusable for retry.
+        3. Shared-connection operations are serialized without mutex-held I/O.
+    """
+
+    _instance: DbCore | None = None
     _lock = threading.Lock()
 
-    def __new__(cls, *args, **kwargs):
+    def __new__(cls, *args: object, **kwargs: object) -> DbCore:
+        del args, kwargs
         with cls._lock:
             if cls._instance is None:
-                cls._instance = super().__new__(cls)
-        return cls._instance
+                instance = super().__new__(cls)
+                instance._initialization_gate = SerializedConnectionGate()
+                instance._initialized = False
+                cls._instance = instance
+        instance = cls._instance
+        if instance is None:
+            raise RuntimeError("DbCore singleton initialization failed")
+        return instance
 
     def __init__(
         self,
-        db_path: Optional[str] = None,
-        localization_manager: Optional[LocalizationManager] = None,
-    ):
-        if hasattr(self, "_initialized") and self._initialized:
-            return
-        
-        self.localization_manager = (
-            localization_manager if localization_manager else LocalizationManager()
-        )
-        self._db_lock = threading.RLock()
-        app_data_dir = get_user_data_dir()
-        if db_path:
-            self.db_path = str(app_data_dir / db_path)
-        else:
-            self.db_path = str(app_data_dir / "wavehelm.db")
+        db_path: str | None = None,
+        localization_manager: LocalizationManager | None = None,
+    ) -> None:
+        requested_path = self._resolve_database_path(db_path)
+        with self._initialization_gate:
+            if self._initialized:
+                self._validate_reinitialization(requested_path, localization_manager)
+                return
+            self._initialize(requested_path, localization_manager)
 
-        logger.info(f"DatabaseManager initializing with db_path: {self.db_path}")
-        self.conn: Optional[sqlite3.Connection] = None
-        self.initialize_database()
+    @staticmethod
+    def _resolve_database_path(db_path: str | None) -> Path:
+        return resolve_database_path(Path(get_user_data_dir()), db_path)
+
+    def _validate_reinitialization(
+        self,
+        requested_path: Path,
+        localization_manager: LocalizationManager | None,
+    ) -> None:
+        if requested_path != Path(self.db_path):
+            raise DatabaseError(
+                "DbCore is already initialized with a different database path.",
+                details=f"active={self.db_path}; requested={requested_path}",
+            )
+        if (
+            localization_manager is not None
+            and localization_manager is not self.localization_manager
+        ):
+            raise DatabaseError(
+                "DbCore is already initialized with a different localization manager."
+            )
+
+    def _initialize(
+        self,
+        requested_path: Path,
+        localization_manager: LocalizationManager | None,
+    ) -> None:
+        self.localization_manager = (
+            localization_manager
+            if localization_manager is not None
+            else LocalizationManager()
+        )
+        self._db_lock = SerializedConnectionGate()
+        self.db_path = str(requested_path)
+        self.conn: sqlite3.Connection | None = None
+        initialized = False
+        try:
+            logger.info("DatabaseManager initializing with db_path: %s", self.db_path)
+            self.initialize_database()
+            initialized = True
+        finally:
+            if not initialized:
+                self._discard_failed_initialization()
         self._initialized = True
 
-    def _get_localized_text(self, key: str, **kwargs) -> str:
+    def _discard_failed_initialization(self) -> None:
+        connection = getattr(self, "conn", None)
+        self.conn = None
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error as error:
+                logger.error(
+                    "Failed to close SQLite connection after initialization error: %s",
+                    error,
+                    exc_info=True,
+                )
+
+    def _get_localized_text(self, key: str, **kwargs: object) -> str:
         return self.localization_manager.get_text(key, **kwargs)
 
-    def connect(self):
+    def connect(self) -> None:
         with self._db_lock:
-            if self.conn:
+            if self.conn is not None:
                 logger.debug("Database is already connected.")
                 return
-
             try:
-                self.conn = sqlite3.connect(
-                    self.db_path, check_same_thread=False, timeout=5.0
+                self.conn = self._open_connection(synchronous="NORMAL")
+            except sqlite3.Error as error:
+                message = f"Database connection error: {error}"
+                logger.critical("[DbCore] %s", message, exc_info=True)
+                raise DatabaseError(message) from error
+            logger.info("Connected to database: %s", self.db_path)
+
+    @staticmethod
+    def _apply_connection_pragmas(
+        connection: sqlite3.Connection, *, synchronous: str
+    ) -> None:
+        if synchronous not in {"NORMAL", "FULL"}:
+            raise ValueError(f"Unsupported SQLite synchronous mode: {synchronous}")
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute(f"PRAGMA synchronous={synchronous};")
+        cursor.execute("PRAGMA busy_timeout=5000;")
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.execute("PRAGMA temp_store=MEMORY;")
+        try:
+            cursor.execute("PRAGMA mmap_size=268435456;")
+        except DB_CONFIG_EXCEPTIONS as error:
+            logger.debug("SQLite mmap_size PRAGMA skipped: %s", error, exc_info=True)
+
+    def _open_connection(self, *, synchronous: str) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path, check_same_thread=False, timeout=5.0)
+        try:
+            connection.row_factory = sqlite3.Row
+            self._apply_connection_pragmas(connection, synchronous=synchronous)
+            return connection
+        except (sqlite3.Error, TypeError, ValueError):
+            try:
+                connection.close()
+            except sqlite3.Error as close_error:
+                logger.error(
+                    "SQLite connection close failed after configuration error: %s",
+                    close_error,
+                    exc_info=True,
                 )
-                self.conn.row_factory = sqlite3.Row
-                self.conn.execute("PRAGMA foreign_keys = ON")
-                self._configure_connection()
-                logger.info(f"Connected to database: {self.db_path}")
-            except sqlite3.Error as e:
-                error_msg = f"Database connection error: {e}"
-                logger.critical(f"[DbCore] {error_msg}", exc_info=True)
-                raise DatabaseError(error_msg) from e
+            raise
 
     def _configure_connection(self) -> None:
         if not self.conn:
             return
         try:
-            cur = self.conn.cursor()
-            cur.execute("PRAGMA journal_mode=WAL;")
-            cur.execute("PRAGMA synchronous=NORMAL;")
-            cur.execute("PRAGMA busy_timeout=5000;")
-            cur.execute("PRAGMA foreign_keys=ON;")
-            cur.execute("PRAGMA temp_store=MEMORY;")
-            try:
-                cur.execute("PRAGMA mmap_size=268435456;")
-            except DB_CONFIG_EXCEPTIONS as error:
-                logger.debug("SQLite mmap_size PRAGMA skipped: %s", error, exc_info=True)
-        except DB_CONFIG_EXCEPTIONS as e:
-            logger.warning("SQLite PRAGMA configuration skipped: %s", e)
+            self._apply_connection_pragmas(self.conn, synchronous="NORMAL")
+        except DB_CONFIG_EXCEPTIONS as error:
+            logger.warning("SQLite PRAGMA configuration skipped: %s", error)
 
-    def close(self):
+    @contextmanager
+    def durable_write_connection(self) -> Iterator[sqlite3.Connection]:
+        """Yield an isolated WAL/FULL connection without global serialization.
+
+        Edge cases:
+            1. An uncommitted transaction is rolled back before close.
+            2. Cleanup failures are surfaced when no body exception is active.
+            3. Cleanup failures never mask an exception raised by the caller body.
+        """
+        try:
+            connection = self._open_connection(synchronous="FULL")
+        except sqlite3.Error as error:
+            raise DatabaseError(
+                f"Unable to open durable SQLite connection: {error}"
+            ) from error
+        try:
+            self._verify_durable_connection(connection)
+            yield connection
+        finally:
+            cleanup_errors = cleanup_durable_connection(connection)
+            if cleanup_errors:
+                message = "; ".join(cleanup_errors)
+                if sys.exc_info()[0] is None:
+                    raise DatabaseError(message)
+                logger.error("Durable SQLite cleanup failed: %s", message)
+
+    def shared_connection(self) -> SharedConnectionBoundary:
+        """Return the serialized idle-connection boundary."""
+        return SharedConnectionBoundary(
+            self._db_lock, self._connection, self._rollback_shared_connection)
+
+    def shared_transaction(self, mode: TransactionMode = "IMMEDIATE") -> SharedTransactionBoundary:
+        """Return a boundary-owned transaction on the shared connection."""
+        return SharedTransactionBoundary(
+            self._db_lock, self._connection, self._rollback_shared_connection, mode)
+
+    @staticmethod
+    def _verify_durable_connection(connection: sqlite3.Connection) -> None:
+        try:
+            journal_row = connection.execute("PRAGMA journal_mode;").fetchone()
+            sync_row = connection.execute("PRAGMA synchronous;").fetchone()
+            journal_mode = str(journal_row[0]).lower()
+            synchronous = int(sync_row[0])
+        except (sqlite3.Error, IndexError, TypeError, ValueError) as error:
+            raise DatabaseError(
+                f"Durable SQLite connection verification failed: {error}"
+            ) from error
+        if journal_mode != "wal" or synchronous != 2:
+            raise DatabaseError(
+                "Durable SQLite connection could not enable WAL/FULL mode."
+            )
+
+    def close(self) -> None:
         with self._db_lock:
-            if self.conn:
-                try:
-                    self.conn.close()
-                    self.conn = None
-                    logger.info("Database connection closed.")
-                except sqlite3.Error as e:
-                    error_msg = f"Error closing database connection: {e}"
-                    logger.error(f"[DbCore] {error_msg}", exc_info=True)
-                    raise DatabaseError(error_msg) from e
-            else:
-                logger.debug("Database not connected, close call ignored.")
+            connection = self.conn
+            active_transaction = getattr(connection, "in_transaction", False)
+            if active_transaction is True:
+                raise DatabaseError("Cannot close an active shared database transaction.")
+            self.conn = None
+        if connection is None:
+            logger.debug("Database not connected, close call ignored.")
+            return
+        try:
+            connection.close()
+        except sqlite3.Error as error:
+            message = f"Error closing database connection: {error}"
+            logger.error("[DbCore] %s", message, exc_info=True)
+            raise DatabaseError(message) from error
+        logger.info("Database connection closed.")
+
+    def _connection(self) -> sqlite3.Connection:
+        if self.conn is None:
+            self.connect()
+        if self.conn is None:
+            raise DatabaseError("Database not connected.")
+        return self.conn
+
+    def _execute_read(
+        self,
+        query: str,
+        params: tuple[object, ...] | None,
+        *,
+        fetch_one: bool,
+    ) -> sqlite3.Row | list[sqlite3.Row] | None:
+        with self._db_lock:
+            connection = self._connection()
+            if getattr(connection, "in_transaction", False) is True:
+                raise DatabaseError("Standalone database read cannot join an active transaction.")
+            try:
+                cursor = connection.cursor()
+                cursor.execute(query, params) if params is not None else cursor.execute(query)
+                return cursor.fetchone() if fetch_one else cursor.fetchall()
+            except sqlite3.IntegrityError as error:
+                raise IntegrityError(
+                    "Database integrity constraint failed.", details=str(error)
+                ) from error
+            except sqlite3.Error as error:
+                raise DatabaseError(
+                    "Database read failed.", details=str(error)
+                ) from error
+
+    def _execute_write(
+        self,
+        query: str,
+        params: tuple[object, ...] | None = None,
+    ) -> DbWriteResult:
+        """Execute, commit, and return metadata from the same SQLite cursor.
+
+        Edge cases:
+            1. A zero-row update/delete remains a successful write with rowcount 0.
+            2. Integrity failures roll back and map to the application error type.
+            3. A failed commit never returns write metadata to the caller.
+        """
+        with self._db_lock:
+            connection = self._connection()
+            if getattr(connection, "in_transaction", False) is True:
+                raise DatabaseError("Standalone database write cannot join an active transaction.")
+            try:
+                cursor = connection.cursor()
+                cursor.execute(query, params) if params is not None else cursor.execute(query)
+                result = DbWriteResult.from_cursor(query, cursor)
+                connection.commit()
+            except sqlite3.IntegrityError as error:
+                self._rollback_shared_connection(connection, error)
+                raise IntegrityError(
+                    "Database integrity constraint failed.", details=str(error)
+                ) from error
+            except sqlite3.Error as error:
+                self._rollback_shared_connection(connection, error)
+                raise DatabaseError(
+                    "Database write failed.", details=str(error)
+                ) from error
+            except DB_QUERY_ARGUMENT_EXCEPTIONS as error:
+                self._rollback_shared_connection(connection, error)
+                raise
+        return result
+
+    def _rollback_shared_connection(
+        self,
+        connection: sqlite3.Connection,
+        original_error: BaseException | None,
+    ) -> None:
+        try:
+            connection.rollback()
+        except sqlite3.Error as rollback_error:
+            if self.conn is connection:
+                self.conn = None
+            try:
+                connection.close()
+            except sqlite3.Error as close_error:
+                logger.error(
+                    "SQLite rollback and close failed: rollback=%s; close=%s",
+                    rollback_error,
+                    close_error,
+                    exc_info=True,
+                )
+            message = f"Database rollback failed: {rollback_error}"
+            if original_error is not None:
+                message = f"{message}; original error: {original_error}"
+            raise DatabaseError(message) from rollback_error
 
     def _execute_query(
         self,
         query: str,
-        params: Optional[Tuple] = None,
+        params: tuple[object, ...] | None = None,
         fetch_one: bool = False,
         fetch_all: bool = False,
-    ) -> Union[sqlite3.Row, List[sqlite3.Row], None]:
-        if not self.conn:
-            self.connect()
+    ) -> sqlite3.Row | list[sqlite3.Row] | None:
+        if fetch_one and fetch_all:
+            raise ValueError("fetch_one and fetch_all are mutually exclusive")
+        if fetch_one or fetch_all:
+            return self._execute_read(query, params, fetch_one=fetch_one)
+        self._execute_write(query, params)
+        return None
 
-        with self._db_lock:
-            if not self.conn:
-                raise DatabaseError("Database not connected.")
+    def initialize_database(self) -> None:
+        """Create, adopt, or migrate the core schema atomically.
 
-            try:
-                cursor = self.conn.cursor()
-                if params is not None:
-                    cursor.execute(query, params)
-                else:
-                    cursor.execute(query)
-                self.conn.commit()
+        Edge cases:
+            1. Partial legacy schemas fail without creating missing tables.
+            2. Future schema versions fail before any database mutation.
+            3. DDL and the version marker roll back together on migration failure.
+        """
+        self.connect()
+        with self.shared_transaction(mode="IMMEDIATE") as transaction:
+            version = ensure_core_schema(transaction)
+        if version != CORE_SCHEMA_VERSION:
+            raise DatabaseError("Core database schema did not reach the required version.")
+        logger.info("Database core schema initialized at version %s.", version)
 
-                if fetch_one:
-                    return cursor.fetchone()
-                elif fetch_all:
-                    return cursor.fetchall()
-                return None
-            except sqlite3.IntegrityError as e:
-                self.conn.rollback()
-                raise e
-            except sqlite3.Error as e:
-                self.conn.rollback()
-                raise e
-            except DB_QUERY_ARGUMENT_EXCEPTIONS as e:
-                self.conn.rollback()
-                raise e
-
-    def _last_changes(self) -> int:
-        if not self.conn:
-            return 0
-        try:
-            return int(self.conn.execute("SELECT changes()").fetchone()[0])
-        except DB_LAST_CHANGES_EXCEPTIONS:
-            return int(getattr(self.conn, "total_changes", 0))
-
-    def initialize_database(self):
-        queries = [
-            """CREATE TABLE IF NOT EXISTS library_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                path TEXT NOT NULL UNIQUE,
-                title TEXT NOT NULL,
-                media_type TEXT NOT NULL,
-                duration REAL NOT NULL,
-                metadata TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS playlists (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                description TEXT,
-                cover_art TEXT,
-                creation_date TEXT NOT NULL,
-                last_modified TEXT NOT NULL
-            )""",
-            """CREATE TABLE IF NOT EXISTS playlist_items (
-                playlist_id INTEGER NOT NULL,
-                media_path TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                added_at TEXT NOT NULL,
-                PRIMARY KEY (playlist_id, media_path),
-                FOREIGN KEY (playlist_id) REFERENCES playlists (id) ON DELETE CASCADE
-            )""",
-            """CREATE TABLE IF NOT EXISTS history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                path TEXT NOT NULL,
-                media_type TEXT NOT NULL,
-                duration REAL NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                metadata TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS favorites (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                path TEXT NOT NULL UNIQUE,
-                title TEXT NOT NULL,
-                media_type TEXT NOT NULL,
-                duration REAL NOT NULL,
-                metadata TEXT,
-                added_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS custom_eq_presets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                settings TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS custom_ambient_presets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                settings TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS user_profile (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_name TEXT NOT NULL,
-                avatar_path TEXT,
-                stats_data TEXT,
-                eq_settings_data TEXT,
-                effects_settings_data TEXT,
-                ambient_settings_data TEXT,
-                created_at TEXT NOT NULL,
-                last_updated TEXT NOT NULL
-            )""",
-            """CREATE TABLE IF NOT EXISTS app_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )""",
-        ]
-        if not self.conn:
-            self.connect()
-        for query in queries:
-            self._execute_query(query)
-        logger.info("Database tables initialized.")
-
-    def __enter__(self):
+    def __enter__(self) -> DbCore:
         self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()

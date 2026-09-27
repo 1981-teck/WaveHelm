@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+import math
+from threading import TIMEOUT_MAX
+from typing import Any, Callable, Protocol
+from .component_adapter.com_thread_manager_api import ResponsePort
 
 from .mf_base import logger
 
@@ -52,6 +55,69 @@ def post_to_com_thread(self, name: str, func: Callable) -> None:
         logger.debug("[IMFAdapter] post_to_com_thread('%s') failed (best effort)", name, exc_info=True)
 
 
+class _TrackedManager(Protocol):
+    def submit_to_com_thread(self, name: str, func: Callable[[], object], response: ResponsePort) -> bool: ...
+
+
+class _TrackedAdapter(Protocol):
+    _closed: bool
+    _shutdown_requested: bool
+    _core: object
+    _source: str | None
+    _com_thread_manager: _TrackedManager | None
+
+
+def submit_to_com_thread(self: _TrackedAdapter, name: str,
+                         func: Callable[[], object], response: ResponsePort) -> bool:
+    """Forward only to an existing manager, guarding closure/core/source at execution.
+
+    No fallback to fire-and-forget or implicit start. Native admission errors
+    propagate to the seek receipt boundary: an exception is not proof of no enqueue.
+    """
+    manager = self._com_thread_manager
+    core, source = self._core, self._source
+    if self._closed or self._shutdown_requested or manager is None or core is None:
+        return False
+    submit = getattr(manager, 'submit_to_com_thread', None)
+    if not callable(submit):
+        return False
+
+    def guarded() -> object:
+        if (self._closed or self._shutdown_requested or self._core is not core
+                or self._source != source or self._com_thread_manager is not manager):
+            raise RuntimeError('Seek command lost its adapter ownership')
+        return func()
+
+    return submit(name, guarded, response) is True
+
+
+class _ShutdownPort(ResponsePort, Protocol):
+    def set_admission(self, accepted: bool) -> None: ...
+    def wait(self, timeout: float) -> bool: ...
+
+
+def call_shutdown_on_com_thread(self, name: str, func: Callable[[], object],
+                               response: _ShutdownPort) -> None:
+    """Submit detached teardown to the existing manager, even after adapter close.
+
+    Unlike a seek, cleanup owns detached resources and must not be invalidated
+    by a new source/core. No manager is created/restarted. Refusal and timeout
+    remain observable; neither triggers fire-and-forget or local execution.
+    """
+    with self._lock:
+        manager = self._com_thread_manager
+    if manager is None:
+        response.set_admission(False)
+        return
+    timeout = float(manager.com_task_timeout)
+    if not math.isfinite(timeout) or not 0 <= timeout <= TIMEOUT_MAX:
+        raise ValueError("Invalid COM cleanup wait budget")
+    accepted = manager.submit_cleanup_to_com_thread(name, func, response)
+    response.set_admission(accepted)
+    if accepted:
+        response.wait(timeout)
+
+
 def call_on_com_thread(self, name: str, func: Callable) -> Any:
     """Inoltra la chiamata sincrona al ComThreadManager usando l'istanza corretta."""
     with self._lock:
@@ -64,7 +130,9 @@ def call_on_com_thread(self, name: str, func: Callable) -> Any:
 _IMF_MEDIA_ENGINE_ADAPTER_THREADING_METHODS: tuple[tuple[str, Callable[..., Any]], ...] = (
     ("_get_com_thread_manager", _get_com_thread_manager),
     ("post_to_com_thread", post_to_com_thread),
+    ("submit_to_com_thread", submit_to_com_thread),
     ("call_on_com_thread", call_on_com_thread),
+    ("call_shutdown_on_com_thread", call_shutdown_on_com_thread),
 )
 
 

@@ -1,0 +1,37 @@
+{
+  "fail_on_vulnerability": true,
+  "limits": {
+    "max_file_bytes": 33554432,
+    "max_license_file_bytes": 4194304,
+    "max_license_files_per_package": 64,
+    "max_packages": 2048,
+    "max_requirements": 128
+  },
+  "project": {
+    "name": "wavehelm",
+    "version": "1.0.2"
+  },
+  "require_https_downloads": true,
+  "required_source_license_files": [
+    "LICENSE",
+    "GPL_SECTION7_ADDITIONAL_TERMS.md",
+    "THIRD_PARTY_LICENSE_AUDIT.md",
+    "THIRD_PARTY_NOTICES.md",
+    "src/resources/legal/NOTICE_INDEX.json",
+    "src/resources/legal/licenses/Apache-2.0.txt",
+    "src/resources/legal/licenses/BSD-3-Clause.txt",
+    "src/resources/legal/licenses/LGPL-2.1.txt",
+    "src/resources/legal/licenses/MIT-CMU.txt",
+    "src/resources/legal/licenses/MIT.txt",
+    "src/resources/legal/licenses/PSF-2.0.txt",
+    "src/resources/legal/licenses/wxWindows-Library-Licence-3.1.txt"
+  ],
+  "sbom_spec_version": "1.6",
+  "schema": "wavehelm-supply-chain-policy-v1",
+  "tools": {
+    "cyclonedx-bom": "7.3.1",
+    "pip": "26.2.1",
+    "pip-audit": "2.10.1"
+  },
+  "vulnerability_exceptions": []
+}

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Protocol
+import math
 
 import pygame
 
@@ -183,23 +184,47 @@ def start_mixer_playback(self, *, start_pos: float, play_loops: int) -> bool:
 
 
 
-def restore_playback_after_seek(self, position_sec: float, play_loops: int) -> None:
-    self._seek_base = position_sec
-    try:
-        pygame.mixer.music.play(loops=play_loops, start=position_sec)
-        return
-    except TypeError:
-        pass
+class AudioSeekOwner(Protocol):
+    """GUI-serialized transport; the serial fences concurrent clock observations."""
+    _is_paused: bool
+    _seek_base: float
+    _current_position: float
+    _current_file: str | None
+    _audio_seek_serial: int
+    _current_play_uses_native_loop: bool
+    def _start_progress_loop(self) -> None: ...
 
+
+def restore_playback_after_seek(self: AudioSeekOwner, position_sec: float,
+                                play_loops: int) -> None:
+    """Restart at an absolute offset and preserve pause without audible restart.
+
+    Paused restart is muted until native pause returns. Failure stops the stream
+    and propagates, never retries a relative MP3 seek or fabricates a zero seek.
+    Invalid volume, unsupported seek, and pause failure cannot publish success.
+    """
+    music = pygame.mixer.music
+    volume: float | None = None
+    errors = (pygame.error, AttributeError, TypeError, ValueError, RuntimeError)
     try:
-        pygame.mixer.music.set_pos(position_sec)
-        if not pygame.mixer.music.get_busy():
-            pygame.mixer.music.play(loops=play_loops)
-    except (pygame.error, TypeError, ValueError, AttributeError):
-        pygame.mixer.music.stop()
-        pygame.mixer.music.play(loops=play_loops)
-        self._seek_base = 0.0
-        self._current_position = 0.0
+        if self._is_paused:
+            raw = music.get_volume()
+            if type(raw) not in (int, float) or not math.isfinite(raw) or not 0 <= raw <= 1:
+                raise ValueError('Invalid native music volume')
+            volume = float(raw)
+            music.set_volume(0.0)
+        music.play(loops=play_loops, start=position_sec)
+        if self._is_paused:
+            music.pause()
+            music.set_volume(volume)
+    except errors:
+        # If stop itself fails, keep the failed stream muted and propagate.
+        music.stop()
+        if volume is not None:
+            music.set_volume(volume)
+        raise
+    self._seek_base = position_sec
+    self._current_position = position_sec
 
 
 

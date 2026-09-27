@@ -1,316 +1,386 @@
 from __future__ import annotations
-
-import json
+from collections.abc import Sequence
 import logging
-import math
 import os
-from typing import List, Optional
-try:
-    import cv2
-except ImportError:
-    cv2 = None  # type: ignore[assignment]
+import sqlite3
+from typing import cast
 
 from src.audio.audio_events import AudioEventBus, AudioEventType
-from src.model.database_manager import DatabaseManager
-from src.model.media_file import MediaFile, MediaType
-from src.utils import ffprobe_service
-from src.utils.helpers import get_app_data_path, is_audio_file, is_video_file
-from src.utils.media_metadata import (
-    AudioMetadataDependencyUnavailableError,
-    AudioMetadataError,
-    read_audio_basic_metadata,
+from src.controller.library_catalog_store import (CatalogCommitStatus, LibraryCatalogLoadResult, LibraryCatalogStore)
+from src.controller.library_media_loader import load_library_media_files
+from src.controller.library_scan import LibraryScanCancellation, LibraryScanLimits
+from src.controller.library_mirror import (
+    LibraryDatabaseGateway,
+    LibraryMirrorResult,
+    LibraryMirrorStatus,
+    LibraryMutationResult,
+    build_library_mirror_failure,
+    synchronize_library_mirror,
 )
-
+from src.model.database_manager import DatabaseManager
+from src.model.media_file import MediaFile
+from src.utils.durable_io import SerializedCommitGate
+from src.utils.exceptions import DatabaseError, NotFoundError
+from src.utils.helpers import get_app_data_path
 logger = logging.getLogger(__name__)
 PATH_EXCEPTIONS = (AttributeError, OSError, TypeError, ValueError)
-FILE_IO_EXCEPTIONS = (OSError, TypeError, ValueError)
-JSON_LOAD_EXCEPTIONS = (OSError, TypeError, ValueError, json.JSONDecodeError)
-DATABASE_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError)
-EVENT_BUS_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError)
-AUDIO_METADATA_EXCEPTIONS = (
-    AudioMetadataDependencyUnavailableError,
-    AudioMetadataError,
-    FileNotFoundError,
+FAVORITE_DATABASE_EXCEPTIONS = (
+    AttributeError,
+    DatabaseError,
+    NotFoundError,
     OSError,
     RuntimeError,
+    sqlite3.Error,
     TypeError,
     ValueError,
 )
-VIDEO_METADATA_EXCEPTIONS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
+
 def _canon_path_win(path_value: str) -> str:
     try:
         return os.path.normcase(os.path.abspath(os.path.normpath(path_value)))
     except PATH_EXCEPTIONS:
         return path_value
 
-def _read_library_video_duration(path: str) -> float:
-    """Return a finite video duration without blocking library indexing.
+def _unique_paths(paths: Sequence[str]) -> tuple[str, ...]:
+    """Deduplicate persisted paths by the runtime's canonical path identity."""
+    unique: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = _canon_path_win(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return tuple(unique)
 
-    Edge cases: unavailable/corrupt OpenCV; invalid rates/counts; typed ffprobe failures.
-    """
-    duration = 0.0
-    if cv2 is not None:
-        capture = None
-        try:
-            capture = cv2.VideoCapture(path)
-            if capture and capture.isOpened():
-                fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
-                frame_count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
-                if math.isfinite(fps) and math.isfinite(frame_count):
-                    if fps > 0.0 and frame_count > 0.0:
-                        duration = max(0.0, frame_count / fps)
-        except VIDEO_METADATA_EXCEPTIONS as error:
-            logger.debug("[Library] OpenCV duration failed for '%s': %s", path, error)
-        finally:
-            if capture is not None:
-                try:
-                    capture.release()
-                except VIDEO_METADATA_EXCEPTIONS as error:
-                    logger.debug("[Library] VideoCapture release failed for '%s': %s", path, error)
-    if duration > 0.0:
-        return duration
-    try:
-        return ffprobe_service.probe_duration(path)
-    except ffprobe_service.FfprobeError as error:
-        logger.debug("[Library] ffprobe duration failed for '%s': %s", path, error)
-        return 0.0
+def _dedupe_media(media_files: Sequence[MediaFile]) -> list[MediaFile]:
+    """Keep the first resolved record for each canonical media path."""
+    unique: list[MediaFile] = []
+    seen: set[str] = set()
+    for media in media_files:
+        key = _canon_path_win(media.path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(media)
+    return unique
 
-def _read_library_video_metadata(path: str) -> dict[str, object]:
-    """Return JSON-safe video audio metadata through the bounded probe boundary.
-
-    Edge cases: unavailable ffprobe; malformed streams; deterministic candidate ordering.
-    """
-    try:
-        audio_tracks = ffprobe_service.probe_audio_tracks(path)
-    except ffprobe_service.FfprobeError as error:
-        logger.debug("[Library] ffprobe audio tracks failed for '%s': %s", path, error)
-        audio_tracks = []
-    return {
-        "audio_tracks": audio_tracks,
-        "audio_track_candidates": ffprobe_service.build_audio_track_candidates(audio_tracks),
-    }
-def _summarize_library_payload_for_debug(content: str, payload: object) -> str:
-    """Return a privacy-preserving summary for library restore debug logs.
-
-    Edge cases: non-list payloads; non-string entries; large libraries.
-    """
-    char_count = len(content)
-    if not isinstance(payload, list):
-        return f"chars={char_count} payload_type={type(payload).__name__}"
-
-    preview: list[str] = []
-    for entry in payload[:5]:
-        if isinstance(entry, str) and entry:
-            preview.append(os.path.basename(entry))
-        else:
-            preview.append(f"<{type(entry).__name__}>")
-
-    suffix = " ..." if len(payload) > 5 else ""
-    return (
-        f"chars={char_count} entries={len(payload)} "
-        f"preview={preview}{suffix}"
-    )
-
-def _read_library_audio_metadata(path: str, fallback_title: str) -> tuple[str, float, dict[str, str]]:
-    """Return normalized audio metadata without hard-failing library imports.
-
-    Edge cases: missing/corrupt tags; blank text tags; invalid durations.
-    """
-    title = fallback_title
-    duration = 0.0
-    metadata: dict[str, str] = {}
-
-    try:
-        tag_data = read_audio_basic_metadata(path)
-    except AUDIO_METADATA_EXCEPTIONS as error:
-        logger.warning("[Library] Audio metadata error for '%s': %s", path, error)
-        return title, duration, metadata
-
-    if tag_data.title:
-        title = tag_data.title
-    if tag_data.artist:
-        metadata["artist"] = tag_data.artist
-    if tag_data.album:
-        metadata["album"] = tag_data.album
-    if tag_data.duration > 0.0:
-        duration = float(tag_data.duration)
-    return title, duration, metadata
+def _copy_media(media: MediaFile) -> MediaFile:
+    """Detach caller-owned mutable media fields before committing controller state."""
+    return MediaFile.from_mapping(media.to_dict())
 
 class LibraryController:
-    """Controller della Libreria."""
+    """Coordinate canonical paths, resolved media, a derived DB mirror, and events.
 
-    def __init__(self, event_bus: AudioEventBus, database_manager: DatabaseManager):
+    Edge cases:
+        1. Catalog failure leaves memory, SQLite, and success events unchanged.
+        2. Post-commit mirror failure remains explicit degraded evidence.
+        3. Concurrent mutations serialize without holding a mutex during I/O.
+        4. Temporarily unavailable paths survive later catalog rewrites.
+    """
+
+    def __init__(self, event_bus: AudioEventBus, database_manager: DatabaseManager) -> None:
         self.event_bus = event_bus
         self.database_manager = database_manager
-        self._media: List[MediaFile] = []
+        self._media: list[MediaFile] = []
+        self._catalog_paths: tuple[str, ...] = ()
         self._paths_index: set[str] = set()
-
+        self._commit_gate = SerializedCommitGate()
+        self._revision = 0
+        self._mirror_needs_full_reconcile = True
+        self._last_mirror_result = LibraryMirrorResult(
+            LibraryMirrorStatus.SYNCHRONIZED, 0, 0, ()
+        )
+        self._last_persistence_result: LibraryMutationResult | None = None
+        self._catalog_load_result = LibraryCatalogLoadResult((), False, ())
         self._app_dir = get_app_data_path()
         self._library_path = self._app_dir / "library.json"
-
+        self._catalog_store = LibraryCatalogStore(self._library_path)
         self.load_persistent_library()
+    @property
+    def catalog_paths(self) -> tuple[str, ...]:
+        """Return the detached canonical path snapshot, including unresolved paths."""
+        return self._catalog_paths
 
-    def _safe_publish(self, event_type: AudioEventType, payload: dict) -> None:
+    @property
+    def unresolved_catalog_paths(self) -> tuple[str, ...]:
+        """Return persisted paths without a currently resolved media record."""
+        resolved = {_canon_path_win(media.path) for media in self._media}
+        return tuple(path for path in self._catalog_paths if _canon_path_win(path) not in resolved)
+    @property
+    def catalog_write_blocked(self) -> bool:
+        """Return whether a corrupt source currently forbids catalog replacement."""
+        return self._catalog_load_result.write_blocked
+    @property
+    def last_persistence_result(self) -> LibraryMutationResult | None:
+        """Return the immutable result of the most recent mutation or explicit save."""
+        return self._last_persistence_result
+    def _safe_publish(self, event_type: AudioEventType, payload: dict[str, object]) -> bool:
         try:
-            self.event_bus.publish(event_type, payload)
-        except EVENT_BUS_EXCEPTIONS as error:
-            logger.error("[Library] Failed to publish %s: %s", event_type, error)
-
-    def _save(self):
-        logger.info("[Library] Attempting to save library.")
+            result = self.event_bus.publish(event_type, payload)
+            if result is False:
+                logger.warning("[Library] Event bus rejected %s.", event_type)
+                return False
+            return True
+        except Exception as error:  # explicit external event-publisher boundary
+            logger.error("[Library] Failed to publish %s: %s", event_type, error, exc_info=True)
+            return False
+    def _set_live_state(self, media: Sequence[MediaFile], paths: Sequence[str]) -> None:
+        self._media = list(media)
+        self._catalog_paths = _unique_paths(paths)
+        self._paths_index = {_canon_path_win(path) for path in self._catalog_paths}
+    def _sync_mirror(
+        self,
+        *,
+        upsert_media: Sequence[MediaFile],
+        remove_paths: Sequence[str],
+        force_full: bool,
+        allow_stale_removal: bool = True,
+    ) -> LibraryMirrorResult:
+        full_reconcile = force_full or self._mirror_needs_full_reconcile
         try:
-            paths = [media.path for media in self._media if media.path]
-            logger.info("[Library] Saving %s paths to %s", len(paths), self._library_path)
-            with open(self._library_path, "w", encoding="utf-8") as file_obj:
-                json.dump(paths, file_obj, ensure_ascii=False, indent=2)
-            logger.info("[Library] successfully saved library to %s", self._library_path)
-        except FILE_IO_EXCEPTIONS as error:
-            logger.warning("[Library] save failed: %s", error)
-
-    def _sync_media_to_database(self, media: MediaFile) -> None:
-        if not media or not media.path:
-            return
-
-        try:
-            self.database_manager.add_library_item(
-                path=media.path,
-                title=media.title or os.path.basename(media.path),
-                media_type=getattr(media.media_type, "name", str(media.media_type)),
-                duration=float(media.duration or 0.0),
-                metadata=dict(media.metadata or {}),
+            result = synchronize_library_mirror(
+                cast(LibraryDatabaseGateway, self.database_manager),
+                catalog_paths=self._catalog_paths,
+                resolved_media=self._media,
+                upsert_media=upsert_media,
+                remove_paths=remove_paths,
+                canonicalize=_canon_path_win,
+                full_reconcile=full_reconcile,
+                allow_stale_removal=allow_stale_removal,
             )
-        except DATABASE_EXCEPTIONS:
-            logger.debug("[Library] Database sync skipped/failed for '%s'", media.path, exc_info=True)
+        except Exception as error:  # explicit post-commit database-mirror boundary
+            failure = build_library_mirror_failure("synchronize", None, error)
+            result = LibraryMirrorResult(LibraryMirrorStatus.DEGRADED, 0, 0, (failure,))
+        self._last_mirror_result = result
+        self._mirror_needs_full_reconcile = not result.is_synchronized
+        for failure in result.failures:
+            logger.error(
+                "[Library] Mirror %s failed for %s (%s): %s",
+                failure.operation,
+                failure.path or "<catalog>",
+                failure.error_type,
+                failure.message,
+            )
+        return result
+    def load_persistent_library(self) -> None:
+        """Load the canonical catalog, preserve unresolved paths, and rebuild the mirror."""
+        with self._commit_gate.transaction():
+            self._load_persistent_library()
+    def _load_persistent_library(self) -> None:
+        load_result = self._catalog_store.load()
+        self._catalog_load_result = load_result
+        paths = _unique_paths(load_result.paths)
+        media = _dedupe_media(load_library_media_files(paths))
+        self._set_live_state(media, paths)
+        mirror = self._sync_mirror(
+            upsert_media=media,
+            remove_paths=(),
+            force_full=True,
+            allow_stale_removal=not load_result.write_blocked,
+        )
+        if load_result.write_blocked:
+            logger.error(
+                "[Library] Catalog loaded read-only; writes blocked: %s",
+                "; ".join(load_result.issues),
+            )
+        logger.info(
+            "[Library] Restored %s resolved items from %s canonical paths; mirror=%s.",
+            len(media),
+            len(paths),
+            mirror.status,
+        )
+    def _build_add_candidate(
+        self, media_files: Sequence[MediaFile]
+    ) -> tuple[list[MediaFile], tuple[str, ...], list[MediaFile]]:
+        candidate_media = list(self._media)
+        candidate_paths = list(self._catalog_paths)
+        catalog_keys = set(self._paths_index)
+        resolved_keys = {_canon_path_win(media.path) for media in self._media}
+        added: list[MediaFile] = []
+        for source_media in media_files:
+            if not isinstance(source_media, MediaFile):
+                raise TypeError("library additions must contain MediaFile values")
+            media = _copy_media(source_media)
+            key = _canon_path_win(media.path)
+            if key not in catalog_keys:
+                candidate_paths.append(media.path)
+                catalog_keys.add(key)
+            if key not in resolved_keys:
+                candidate_media.append(media)
+                resolved_keys.add(key)
+                added.append(media)
+        return candidate_media, tuple(candidate_paths), added
 
-    def _remove_media_from_database(self, path: str) -> None:
-        if not path:
-            return
-
-        try:
-            self.database_manager.remove_library_item(path)
-        except DATABASE_EXCEPTIONS:
-            logger.debug("[Library] Database delete skipped/failed for '%s'", path, exc_info=True)
-
-    def load_persistent_library(self):
-        logger.info("[Library] Loading persistent library from: %s", self._library_path)
-        if not self._library_path.is_file():
-            logger.info("[Library] library.json does not exist. Starting with an empty library.")
-            return
-
-        try:
-            with open(self._library_path, "r", encoding="utf-8") as file_obj:
-                content = file_obj.read()
-                if not content.strip():
-                    logger.warning("[Library] library.json is empty. Starting with an empty library.")
-                    return
-                paths = json.loads(content)
-                logger.debug(
-                    "[Library] library.json summary: %s",
-                    _summarize_library_payload_for_debug(content, paths),
-                )
-        except json.JSONDecodeError as error:
-            logger.error("[Library] Failed to decode library.json: %s. The file might be corrupted.", error, exc_info=True)
-            return
-        except JSON_LOAD_EXCEPTIONS as error:
-            logger.error("[Library] Error while loading the library: %s", error, exc_info=True)
-            return
-
-        if isinstance(paths, list):
-            logger.info("[Library] Found %s paths in library.json. Processing...", len(paths))
-            self._add_paths_internal(paths, emit_feedback=False)
-            logger.info("[Library] Restored %s items from %s", len(self._media), self._library_path)
+    def _commit_candidate(
+        self,
+        candidate_media: Sequence[MediaFile],
+        candidate_paths: Sequence[str],
+        *,
+        added_media: Sequence[MediaFile],
+        removed_paths: Sequence[str],
+        force_catalog_write: bool = False,
+        force_full_mirror: bool = False,
+    ) -> LibraryMutationResult:
+        prepared_media = list(candidate_media)
+        prepared_paths = _unique_paths(candidate_paths)
+        prepared_index = {_canon_path_win(path) for path in prepared_paths}
+        catalog_changed = prepared_paths != self._catalog_paths
+        state_changed = prepared_media != self._media or catalog_changed
+        if force_catalog_write or catalog_changed:
+            catalog_status = self._catalog_store.commit(prepared_paths)
         else:
-            logger.error("[Library] Expected a list in library.json, but found %s. Library not loaded.", type(paths).__name__)
-
+            catalog_status = CatalogCommitStatus.UNCHANGED
+        if state_changed:
+            self._media = prepared_media
+            self._catalog_paths = prepared_paths
+            self._paths_index = prepared_index
+            self._revision += 1
+        mirror = self._sync_mirror(
+            upsert_media=added_media,
+            remove_paths=removed_paths,
+            force_full=force_full_mirror,
+        )
+        result = LibraryMutationResult(
+            catalog_status,
+            mirror,
+            len(added_media),
+            len(removed_paths),
+            len(self._catalog_paths),
+            len(self._media),
+            self._revision,
+        )
+        self._last_persistence_result = result
+        if catalog_status is CatalogCommitStatus.COMMITTED_WITHOUT_DIRECTORY_SYNC:
+            logger.warning("[Library] Catalog committed without confirmed directory sync.")
+        return result
+    def _announce_change(
+        self,
+        result: LibraryMutationResult,
+        *,
+        emit_event: bool,
+        emit_feedback: bool,
+        action_message: str,
+    ) -> None:
+        if emit_event:
+            self._safe_publish(
+                AudioEventType.LIBRARY_UPDATED,
+                {
+                    "count": result.resolved_media_count,
+                    "added": result.added_count,
+                    "removed": result.removed_count,
+                    "catalog_status": result.catalog_status.value,
+                    "mirror_status": result.mirror_result.status.value,
+                    "revision": result.revision,
+                },
+            )
+        if not emit_feedback:
+            return
+        if result.is_fully_synchronized:
+            message, color = action_message, "green"
+        elif not result.mirror_result.is_synchronized:
+            message, color = action_message + " Indice database da riconciliare.", "orange"
+        else:
+            message, color = action_message + " Persistenza con durability ridotta.", "orange"
+        self._safe_publish(AudioEventType.FEEDBACK_MESSAGE, {"message": message, "color": color})
     def add_media_files_from_objects(
         self,
-        media_files: List[MediaFile],
+        media_files: Sequence[MediaFile],
         emit_event: bool = True,
         emit_feedback: bool = True,
-    ):
-        if not media_files:
-            return
-
-        added: List[MediaFile] = []
-        for media in media_files:
-            if _canon_path_win(media.path) in self._paths_index:
-                continue
-            self._media.append(media)
-            self._paths_index.add(_canon_path_win(media.path))
-            self._sync_media_to_database(media)
-            added.append(media)
-
+    ) -> LibraryMutationResult:
+        with self._commit_gate.transaction():
+            candidate_media, candidate_paths, added = self._build_add_candidate(media_files)
+            result = self._commit_candidate(
+                candidate_media,
+                candidate_paths,
+                added_media=added,
+                removed_paths=(),
+            )
         if added:
-            self._save()
-            if emit_event:
-                self._safe_publish(AudioEventType.LIBRARY_UPDATED, {"count": len(added)})
-
-        if emit_feedback:
-            if added:
-                self._safe_publish(
-                    AudioEventType.FEEDBACK_MESSAGE,
-                    {"message": f"{len(added)} file aggiunti alla libreria.", "color": "green"},
-                )
-            else:
-                self._safe_publish(
-                    AudioEventType.FEEDBACK_MESSAGE,
-                    {"message": "Nessun file riproducibile trovato.", "color": "orange"},
-                )
-
-    def add_media(self, path: str, emit_event: bool = True, emit_feedback: bool = True):
-        if not path:
-            return
-        media_files = self._get_media_files_from_paths([path])
-        self.add_media_files_from_objects(media_files, emit_event, emit_feedback)
-
-    def add_media_files(self, paths: List[str], emit_event: bool = True, emit_feedback: bool = True):
-        if not paths:
-            return
-        media_files = self._get_media_files_from_paths(paths)
-        self.add_media_files_from_objects(media_files, emit_event, emit_feedback)
-
-    def _get_media_files_from_paths(self, paths: List[str]) -> List[MediaFile]:
-        to_add: List[str] = []
-        for candidate in paths:
-            if not candidate:
-                continue
-            if os.path.isdir(candidate):
-                to_add.extend(self._expand_folder(candidate))
-            elif os.path.isfile(candidate) and (is_audio_file(candidate) or is_video_file(candidate)):
-                to_add.append(candidate)
-
-        media_files: List[MediaFile] = []
-        for file_path in to_add:
-            media = self._create_media_from_path(file_path)
-            if media:
-                media_files.append(media)
-        return media_files
-
-    def remove_media(self, path: str, emit_event: bool = True, emit_feedback: bool = True) -> bool:
-        if not path:
-            return False
-
-        before = len(self._media)
-        self._media = [media for media in self._media if media.path != path]
-        self._paths_index.discard(_canon_path_win(path))
-        after = len(self._media)
-        if after == before:
-            return False
-
-        self._save()
-        self._remove_media_from_database(path)
-        if emit_event:
-            self._safe_publish(AudioEventType.LIBRARY_UPDATED, {"count": after})
-        if emit_feedback:
+            self._announce_change(
+                result,
+                emit_event=emit_event,
+                emit_feedback=emit_feedback,
+                action_message=f"{len(added)} file aggiunti alla libreria.",
+            )
+        elif emit_feedback:
             self._safe_publish(
                 AudioEventType.FEEDBACK_MESSAGE,
-                {"message": f"Rimosso dalla libreria: {os.path.basename(path)}", "color": "green"},
+                {"message": "Nessun file riproducibile trovato.", "color": "orange"},
             )
+        return result
+    def add_media(
+        self, path: str, emit_event: bool = True, emit_feedback: bool = True,
+        *, scan_limits: LibraryScanLimits | None = None,
+        cancellation: LibraryScanCancellation | None = None,
+    ) -> LibraryMutationResult:
+        values = [path] if path else []
+        media_files = (
+            load_library_media_files(values)
+            if scan_limits is None and cancellation is None
+            else load_library_media_files(
+                values, limits=scan_limits, cancellation=cancellation
+            )
+        )
+        return self.add_media_files_from_objects(media_files, emit_event, emit_feedback)
+    def add_media_files(
+        self, paths: Sequence[str], emit_event: bool = True, emit_feedback: bool = True,
+        *, scan_limits: LibraryScanLimits | None = None,
+        cancellation: LibraryScanCancellation | None = None,
+    ) -> LibraryMutationResult:
+        media_files = (
+            load_library_media_files(paths)
+            if scan_limits is None and cancellation is None
+            else load_library_media_files(
+                paths, limits=scan_limits, cancellation=cancellation
+            )
+        )
+        return self.add_media_files_from_objects(media_files, emit_event, emit_feedback)
+    def remove_media(
+        self, path: str, emit_event: bool = True, emit_feedback: bool = True
+    ) -> bool:
+        if not path:
+            return False
+        key = _canon_path_win(path)
+        with self._commit_gate.transaction():
+            removed_paths = tuple(
+                saved for saved in self._catalog_paths if _canon_path_win(saved) == key
+            )
+            candidate_media = [
+                media for media in self._media if _canon_path_win(media.path) != key
+            ]
+            candidate_paths = tuple(
+                saved for saved in self._catalog_paths if _canon_path_win(saved) != key
+            )
+            if not removed_paths and len(candidate_media) == len(self._media):
+                return False
+            result = self._commit_candidate(
+                candidate_media,
+                candidate_paths,
+                added_media=(),
+                removed_paths=removed_paths or (path,),
+            )
+        self._announce_change(
+            result,
+            emit_event=emit_event,
+            emit_feedback=emit_feedback,
+            action_message=f"Rimosso dalla libreria: {os.path.basename(path)}",
+        )
         return True
-
-    def remove_media_by_path(self, path: str, emit_event: bool = True, emit_feedback: bool = True) -> bool:
-        return self.remove_media(path=path, emit_event=emit_event, emit_feedback=emit_feedback)
-
+    def remove_media_by_path(
+        self, path: str, emit_event: bool = True, emit_feedback: bool = True
+    ) -> bool:
+        return self.remove_media(path, emit_event, emit_feedback)
+    def save_library(self) -> LibraryMutationResult:
+        """Verify, persist, and reconcile the current canonical snapshot."""
+        with self._commit_gate.transaction():
+            return self._commit_candidate(
+                self._media,
+                self._catalog_paths,
+                added_media=(),
+                removed_paths=(),
+                force_catalog_write=True,
+                force_full_mirror=True,
+            )
     def add_to_favorites(
         self,
         media_file: MediaFile,
@@ -320,7 +390,6 @@ class LibraryController:
     ) -> bool:
         if not media_file or not media_file.path:
             return False
-
         try:
             if self.database_manager.is_favorite(media_file.path):
                 if emit_feedback:
@@ -329,10 +398,6 @@ class LibraryController:
                         {"message": f"Gia' nei preferiti: {media_file.title}", "color": "orange"},
                     )
                 return False
-        except DATABASE_EXCEPTIONS:
-            logger.debug("Favorite existence check failed", exc_info=True)
-
-        try:
             self.database_manager.add_favorite(
                 path=media_file.path,
                 title=media_file.title,
@@ -340,15 +405,7 @@ class LibraryController:
                 duration=media_file.duration,
                 metadata=media_file.metadata,
             )
-            if emit_event:
-                self._safe_publish(AudioEventType.FAVORITE_CHANGED, {"path": media_file.path, "is_favorite": True})
-            if emit_feedback:
-                self._safe_publish(
-                    AudioEventType.FEEDBACK_MESSAGE,
-                    {"message": f"Aggiunto ai preferiti: {media_file.title}", "color": "green"},
-                )
-            return True
-        except DATABASE_EXCEPTIONS as error:
+        except FAVORITE_DATABASE_EXCEPTIONS as error:
             logger.error("Error adding favorite: %s", error)
             if emit_feedback:
                 self._safe_publish(
@@ -356,95 +413,38 @@ class LibraryController:
                     {"message": f"Errore nell'aggiungere il preferito: {media_file.title}", "color": "red"},
                 )
             return False
-
-    def get_all_media(self) -> List[MediaFile]:
-        return list(self._media)
-
-    def save_library(self):
-        self._save()
-
-    def get_media_by_path(self, path: str) -> Optional[MediaFile]:
+        if emit_event:
+            self._safe_publish(
+                AudioEventType.FAVORITE_CHANGED,
+                {"path": media_file.path, "is_favorite": True},
+            )
+        if emit_feedback:
+            self._safe_publish(
+                AudioEventType.FEEDBACK_MESSAGE,
+                {"message": f"Aggiunto ai preferiti: {media_file.title}", "color": "green"},
+            )
+        return True
+    def get_all_media(self) -> list[MediaFile]:
+        return [_copy_media(media) for media in self._media]
+    def get_media_by_path(self, path: str) -> MediaFile | None:
         wanted = _canon_path_win(path)
         for media in self._media:
-            if media.path == path or _canon_path_win(media.path) == wanted:
-                return media
+            if _canon_path_win(media.path) == wanted:
+                return _copy_media(media)
         return None
-
-    def search_media(self, query: str) -> List[MediaFile]:
+    def search_media(self, query: str) -> list[MediaFile]:
         normalized_query = (query or "").strip().lower()
         if not normalized_query:
             return self.get_all_media()
-
-        result: List[MediaFile] = []
+        result: list[MediaFile] = []
         for media in self._media:
-            title = (media.title or "").lower()
-            artist = ((media.metadata.get("artist", "") or "").lower() if hasattr(media, "metadata") else "")
-            album = ((media.metadata.get("album", "") or "").lower() if hasattr(media, "metadata") else "")
-            path_value = media.path.lower() if media.path else ""
-            if normalized_query in title or normalized_query in artist or normalized_query in album or normalized_query in path_value:
-                result.append(media)
+            metadata = media.metadata
+            values = (
+                media.title,
+                str(metadata.get("artist", "") or ""),
+                str(metadata.get("album", "") or ""),
+                media.path,
+            )
+            if any(normalized_query in value.lower() for value in values):
+                result.append(_copy_media(media))
         return result
-
-    def _expand_folder(self, folder: str) -> List[str]:
-        media_paths: List[str] = []
-        for root, _, files in os.walk(folder):
-            for filename in files:
-                file_path = os.path.join(root, filename)
-                if is_audio_file(file_path) or is_video_file(file_path):
-                    media_paths.append(file_path)
-        return media_paths
-
-    def _create_media_from_path(self, path: str) -> Optional[MediaFile]:
-        if is_audio_file(path):
-            media_type = MediaType.AUDIO
-        elif is_video_file(path):
-            media_type = MediaType.VIDEO
-        else:
-            return None
-
-        title = os.path.basename(path)
-        duration = 0.0
-        metadata: dict[str, object] = {}
-
-        if media_type is MediaType.AUDIO:
-            title, duration, audio_metadata = _read_library_audio_metadata(path, title)
-            metadata = dict(audio_metadata)
-        else:
-            duration = _read_library_video_duration(path)
-            metadata = _read_library_video_metadata(path)
-
-        return MediaFile(path=path, title=title, media_type=media_type, duration=duration, metadata=metadata)
-
-    def _add_paths_internal(self, paths: List[str], emit_feedback: bool) -> List[MediaFile]:
-        to_add: List[str] = []
-        for candidate in paths:
-            if not candidate:
-                continue
-            if os.path.isdir(candidate):
-                to_add.extend(self._expand_folder(candidate))
-            elif os.path.isfile(candidate) and (is_audio_file(candidate) or is_video_file(candidate)):
-                to_add.append(candidate)
-
-        added: List[MediaFile] = []
-        for file_path in to_add:
-            if _canon_path_win(file_path) in self._paths_index:
-                continue
-            media = self._create_media_from_path(file_path)
-            if media:
-                self._media.append(media)
-                self._paths_index.add(_canon_path_win(file_path))
-                self._sync_media_to_database(media)
-                added.append(media)
-
-        if emit_feedback:
-            if added:
-                self._safe_publish(
-                    AudioEventType.FEEDBACK_MESSAGE,
-                    {"message": f"{len(added)} file aggiunti alla libreria.", "color": "green"},
-                )
-            else:
-                self._safe_publish(
-                    AudioEventType.FEEDBACK_MESSAGE,
-                    {"message": "Nessun file riproducibile trovato.", "color": "orange"},
-                )
-        return added

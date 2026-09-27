@@ -2,7 +2,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import signal  # Per il calcolo dei filtri biquad
 import logging
-from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING, Union
 
 from src.audio.audio_events import AudioEventBus
 from src.audio.audio_events import AudioEventType

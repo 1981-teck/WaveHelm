@@ -10,8 +10,12 @@ from src.model.media_file import MediaType
 class DummyStateManager:
     def __init__(self, state=PlayerState.STOPPED):
         self.state = state
+        self.playback_revision = 0
         self.update_calls = []
         self.is_video_value = False
+
+    def invalidate_end_observation(self):
+        self.playback_revision += 1
 
     def update_state(self, state, payload=None):
         self.state = state
@@ -289,3 +293,57 @@ def test_play_audio_fails_closed_when_set_file_rejects_media():
         {'message': 'Audio playback did not start correctly.'},
     )
     assert (PlayerState.PLAYING_AUDIO, None) not in state.update_calls
+
+
+def test_play_video_to_video_preserves_existing_video_adapter():
+    state = DummyStateManager(PlayerState.PLAYING_VIDEO)
+    audio = DummyAudioEngine()
+    video = DummyVideoController()
+    controller = EngineController(state, audio, video)
+
+    result = controller.play(_media('next.mp4', MediaType.VIDEO), loop=False)
+
+    assert result is True
+    assert not any(call[0] == 'stop' for call in video.calls)
+    assert state.state == PlayerState.LOADING
+
+
+def test_play_replacing_loading_video_preserves_existing_video_adapter():
+    state = DummyStateManager(PlayerState.LOADING)
+    audio = DummyAudioEngine()
+    video = DummyVideoController()
+    controller = EngineController(state, audio, video)
+
+    result = controller.play(_media('replacement.mp4', MediaType.VIDEO), loop=True)
+
+    assert result is True
+    assert not any(call[0] == 'stop' for call in video.calls)
+    assert state.state == PlayerState.LOADING
+
+
+def test_play_video_to_audio_still_closes_video_adapter():
+    state = DummyStateManager(PlayerState.PLAYING_VIDEO)
+    audio = DummyAudioEngine()
+    video = DummyVideoController()
+    controller = EngineController(state, audio, video)
+
+    result = controller.play(_media('song.mp3', MediaType.AUDIO), loop=False)
+
+    assert result is True
+    assert ('stop', True) in video.calls
+    assert ('stop', False) not in video.calls
+    assert state.state == PlayerState.PLAYING_AUDIO
+
+
+def test_repeated_video_replacements_do_not_request_adapter_close():
+    state = DummyStateManager(PlayerState.PLAYING_VIDEO)
+    audio = DummyAudioEngine()
+    video = DummyVideoController()
+    controller = EngineController(state, audio, video)
+
+    for index in range(12):
+        assert controller.play(_media(f'clip-{index}.mp4', MediaType.VIDEO), loop=False) is True
+        state.state = PlayerState.PLAYING_VIDEO
+
+    stop_calls = [call for call in video.calls if call[0] == 'stop']
+    assert stop_calls == []

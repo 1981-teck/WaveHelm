@@ -9,6 +9,8 @@ from typing import Any, Optional
 import pygame
 
 from src.audio.audio_events import AudioEventType
+from src.audio.effects import EffectsEngine
+from src.audio.equalizer import Equalizer
 from src.utils.helpers import get_app_data_path
 
 logger = logging.getLogger(__name__)

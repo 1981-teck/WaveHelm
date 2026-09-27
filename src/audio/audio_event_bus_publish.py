@@ -1,337 +1,393 @@
 from __future__ import annotations
 
 import logging
-import threading
 import time
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable
 
-from .audio_event_models import AudioEventType, EventMetadata, EventRecord, EventSubscription
+from .audio_event_bus_core import _validate_event_key
+from .audio_event_bus_observation import (
+    clear_history,
+    get_active_subscriptions,
+    get_event_history,
+    get_stats,
+    record_event as _record_event,
+    reset_stats,
+    wait_for_event,
+    _mark_observation_changed,
+)
+from .audio_event_models import (
+    AudioEventType,
+    EventMetadata,
+    EventSubscription,
+    snapshot_event_payload,
+)
 
 logger = logging.getLogger(__name__)
 
+EventKey = AudioEventType | str
 EVENT_BUS_PUBLISH_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError)
-EVENT_BUS_CALLBACK_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError)
-EVENT_BUS_ASYNC_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError)
+_ADMISSION_ACCEPTED = 'accepted'
+_ADMISSION_RATE_LIMITED = 'rate_limited'
+_ADMISSION_SHUTTING_DOWN = 'shutting_down'
+_CALLBACK_COMPLETED = 'completed'
+_CALLBACK_FAILED = 'failed'
+_CALLBACK_SKIPPED = 'skipped'
+
+
+def _increment_stat(self, name: str, amount: int = 1) -> None:
+    with self._lock:
+        current = self._stats[name]
+        if isinstance(current, bool) or not isinstance(current, int):
+            raise RuntimeError(f'Event bus stat {name!r} is not an integer')
+        self._stats[name] = current + amount
+        _mark_observation_changed(self)
+
+
+def _record_boundary_error(
+    self,
+    event_type: EventKey,
+    boundary: str,
+    error: Exception,
+    subscription_id: str | None = None,
+) -> None:
+    logger.error(
+        'Event bus %s failure for %s (subscription=%s): %s',
+        boundary,
+        event_type,
+        subscription_id,
+        error,
+        exc_info=True,
+    )
+    _increment_stat(self, 'errors')
+
+
+def _enter_publish(self, event_type: EventKey) -> str:
+    """Reserve rate-limit and lifecycle capacity in O(1) locked work."""
+    with self._publish_condition:
+        if self._shutting_down:
+            return _ADMISSION_SHUTTING_DOWN
+        rate_limit = self._rate_limits.get(event_type)
+        if rate_limit is not None and not rate_limit.reserve(time.monotonic()):
+            current = self._stats['events_rate_limited']
+            if isinstance(current, bool) or not isinstance(current, int):
+                raise RuntimeError('Event bus rate-limit counter is not an integer')
+            self._stats['events_rate_limited'] = current + 1
+            _mark_observation_changed(self)
+            return _ADMISSION_RATE_LIMITED
+        self._active_publishes += 1
+        depth = getattr(self._publish_context, 'depth', 0)
+        self._publish_context.depth = depth + 1
+        return _ADMISSION_ACCEPTED
+
+
+def _leave_publish(self) -> None:
+    with self._publish_condition:
+        depth = getattr(self._publish_context, 'depth', 0)
+        if depth < 1 or self._active_publishes < 1:
+            raise RuntimeError('Event bus publish lifecycle state is inconsistent')
+        self._publish_context.depth = depth - 1
+        self._active_publishes -= 1
+        if self._active_publishes == 0:
+            self._publish_condition.notify_all()
 
 
 def publish(
     self,
-    event_type: AudioEventType,
-    data: Any = None,
-    source: Optional[str] = None,
+    event_type: EventKey,
+    data: object = None,
+    source: str | None = None,
     priority: int = 0,
-    correlation_id: Optional[str] = None,
+    correlation_id: str | None = None,
     require_ui_thread: bool = False,
 ) -> bool:
-    with self._lock:
-        if self._shutting_down:
-            logger.debug("Ignoring event %s: bus is shutting down", event_type)
-            return False
-
-    if not self._check_rate_limit(event_type):
-        logger.debug("Event %s rate limited", event_type)
+    validated_event_type = _validate_event_key(event_type)
+    if not isinstance(require_ui_thread, bool):
+        raise TypeError('require_ui_thread must be a boolean')
+    admission = _enter_publish(self, validated_event_type)
+    if admission == _ADMISSION_SHUTTING_DOWN:
+        logger.debug('Ignoring event %s: bus is shutting down', event_type)
         return False
+    if admission == _ADMISSION_RATE_LIMITED:
+        return False
+    try:
+        return self._publish_internal(
+            event_type=validated_event_type,
+            data=data,
+            source=source,
+            priority=priority,
+            correlation_id=correlation_id,
+            require_ui_thread=require_ui_thread,
+        )
+    finally:
+        _leave_publish(self)
 
-    return self._publish_internal(
-        event_type=event_type,
-        data=data,
-        source=source,
-        priority=priority,
-        correlation_id=correlation_id,
-        require_ui_thread=require_ui_thread,
-    )
 
-
-def _publish_internal(
+def _prepare_event(
     self,
-    event_type: AudioEventType,
-    data: Any = None,
-    source: Optional[str] = None,
-    priority: int = 0,
-    correlation_id: Optional[str] = None,
-    require_ui_thread: bool = False,
-) -> bool:
+    event_type: EventKey,
+    source: str | None,
+    priority: int,
+    correlation_id: str | None,
+) -> tuple[EventMetadata, tuple[EventSubscription, ...]]:
     with self._lock:
         self._event_counter += 1
-        event_id = f"evt_{self._event_counter}"
-
         metadata = EventMetadata(
             timestamp=datetime.now(),
             source=source,
             priority=priority,
             correlation_id=correlation_id,
-            event_id=event_id,
+            event_id=f'evt_{self._event_counter}',
         )
+        candidates = tuple(
+            subscription
+            for subscription in self._subscribers.get(event_type, ())
+            if subscription.is_active
+        )
+    return metadata, candidates
 
-        if event_type not in self._subscribers:
-            subscribers = []
-        else:
-            subscribers = [
-                s for s in self._subscribers[event_type]
-                if s.is_active and s.should_receive(data)
-            ]
 
-    if not subscribers:
-        self._record_event(event_type, data, metadata, 0, 0.0)
-        self._stats['events_published'] += 1
-        return True
+def _subscription_accepts(
+    self,
+    subscription: EventSubscription,
+    event_type: EventKey,
+    data: object,
+) -> bool:
+    with self._lock:
+        if not subscription.is_active:
+            return False
+    filter_condition = subscription.filter_condition
+    if filter_condition is not None:
+        try:
+            if not bool(filter_condition(data)):
+                return False
+        except Exception as error:
+            _record_boundary_error(
+                self,
+                event_type,
+                'filter callback',
+                error,
+                subscription.subscription_id,
+            )
+            return False
+    with self._lock:
+        return subscription.try_claim_delivery()
 
-    self._update_rate_limit(event_type)
-    start_time = time.time()
-    notified_count = 0
 
+def _select_subscribers(
+    self,
+    candidates: tuple[EventSubscription, ...],
+    event_type: EventKey,
+    data: object,
+) -> tuple[EventSubscription, ...]:
+    return tuple(
+        subscription
+        for subscription in candidates
+        if _subscription_accepts(self, subscription, event_type, data)
+    )
+
+
+def _publish_internal(
+    self,
+    event_type: EventKey,
+    data: object = None,
+    source: str | None = None,
+    priority: int = 0,
+    correlation_id: str | None = None,
+    require_ui_thread: bool = False,
+) -> bool:
     try:
-        for subscription in subscribers:
+        history_data = snapshot_event_payload(data)
+        metadata, candidates = _prepare_event(
+            self,
+            event_type,
+            source,
+            priority,
+            correlation_id,
+        )
+        subscribers = _select_subscribers(self, candidates, event_type, data)
+        start_time = time.perf_counter()
+        dispatched_count = sum(
+            1
+            for subscription in subscribers
             if self._execute_callback(
                 subscription=subscription,
                 event_type=event_type,
                 data=data,
                 require_ui_thread=require_ui_thread,
-            ):
-                notified_count += 1
-                subscription.increment_call_count()
-
-        processing_time = (time.time() - start_time) * 1000
-        self._record_event(event_type, data, metadata, notified_count, processing_time)
-        self._stats['events_published'] += 1
-        self._stats['events_processed'] += notified_count
+            )
+        )
+        processing_time = (time.perf_counter() - start_time) * 1000.0
+        self._record_event(
+            event_type,
+            history_data,
+            metadata,
+            dispatched_count,
+            processing_time,
+        )
         return True
-
-    except EVENT_BUS_PUBLISH_EXCEPTIONS as e:
-        logger.error("Error publishing event %s: %s", event_type, e, exc_info=True)
-        self._stats['errors'] += 1
+    except EVENT_BUS_PUBLISH_EXCEPTIONS as error:
+        logger.error('Error publishing event %s: %s', event_type, error, exc_info=True)
+        _increment_stat(self, 'errors')
         return False
+
+
+def _finalize_one_time_delivery(
+    self,
+    subscription: EventSubscription,
+    event_type: EventKey,
+) -> None:
+    if subscription.one_time:
+        self.unsubscribe(event_type, subscription=subscription)
+
+
+def _run_subscription_callback(
+    self,
+    subscription: EventSubscription,
+    event_type: EventKey,
+    data: object,
+) -> str:
+    with self._lock:
+        if not subscription.is_active:
+            return _CALLBACK_SKIPPED
+    callback_depth = getattr(self._callback_context, 'depth', 0)
+    self._callback_context.depth = callback_depth + 1
+    try:
+        try:
+            subscription.callback(data)
+        except Exception as error:
+            _record_boundary_error(
+                self,
+                event_type,
+                'subscriber callback',
+                error,
+                subscription.subscription_id,
+            )
+            return _CALLBACK_FAILED
+    finally:
+        self._callback_context.depth = callback_depth
+        _finalize_one_time_delivery(self, subscription, event_type)
+
+    with self._lock:
+        if not self._shutting_down:
+            subscription.increment_call_count()
+            current = self._stats['events_processed']
+            if isinstance(current, bool) or not isinstance(current, int):
+                raise RuntimeError('Event bus processed counter is not an integer')
+            self._stats['events_processed'] = current + 1
+            _mark_observation_changed(self)
+    return _CALLBACK_COMPLETED
+
+
+def _run_async_subscription_callback(
+    self,
+    subscription: EventSubscription,
+    event_type: EventKey,
+    data: object,
+) -> str:
+    self._callback_context.in_async_worker = True
+    try:
+        return _run_subscription_callback(self, subscription, event_type, data)
+    finally:
+        self._callback_context.in_async_worker = False
+
+
+def _release_failed_dispatch_claim(self, subscription: EventSubscription) -> None:
+    with self._lock:
+        subscription.release_delivery_claim()
 
 
 def _execute_callback(
     self,
     subscription: EventSubscription,
-    event_type: AudioEventType,
-    data: Any,
+    event_type: EventKey,
+    data: object,
     require_ui_thread: bool,
 ) -> bool:
-    def _run() -> None:
-        try:
-            subscription.callback(data)
-        except EVENT_BUS_CALLBACK_EXCEPTIONS as e:
-            logger.error(
-                "Error in callback for %s (subscription %s): %s",
-                event_type,
-                subscription.subscription_id,
-                e,
-                exc_info=True,
-            )
-            raise
+    with self._lock:
+        dispatcher = self._ui_dispatcher if require_ui_thread else None
+        executor = self._executor if self._enable_async and dispatcher is None else None
 
-    use_ui_thread = require_ui_thread and self._ui_dispatcher is not None
-    use_async = self._enable_async and not use_ui_thread
-
-    if use_ui_thread:
+    if dispatcher is not None:
         try:
-            self._ui_dispatcher(_run)
+            dispatcher(lambda: _run_subscription_callback(self, subscription, event_type, data))
             return True
-        except EVENT_BUS_CALLBACK_EXCEPTIONS as e:
-            logger.error("UI dispatcher failed for %s: %s", event_type, e)
+        except Exception as error:
+            _release_failed_dispatch_claim(self, subscription)
+            _record_boundary_error(
+                self,
+                event_type,
+                'UI dispatcher',
+                error,
+                subscription.subscription_id,
+            )
             return False
 
-    if use_async and self._executor:
-        future = self._executor.submit(_run)
-        future.add_done_callback(self._handle_async_result)
-        return True
+    if executor is not None:
+        try:
+            future = executor.submit(
+                _run_async_subscription_callback,
+                self,
+                subscription,
+                event_type,
+                data,
+            )
+            future.add_done_callback(self._handle_async_result)
+            return True
+        except Exception as error:
+            _release_failed_dispatch_claim(self, subscription)
+            _record_boundary_error(
+                self,
+                event_type,
+                'async dispatcher',
+                error,
+                subscription.subscription_id,
+            )
+            return False
 
-    try:
-        _run()
-        return True
-    except EVENT_BUS_CALLBACK_EXCEPTIONS:
-        return False
+    return _run_subscription_callback(self, subscription, event_type, data) != _CALLBACK_SKIPPED
 
 
-def _handle_async_result(self, future: Future) -> None:
+def _handle_async_result(self, future: Future[str]) -> None:
     try:
         future.result()
-    except EVENT_BUS_ASYNC_EXCEPTIONS as e:
-        logger.error("Async callback execution failed: %s", e)
-        self._stats['errors'] += 1
+    except CancelledError as error:
+        with self._lock:
+            shutting_down = self._shutting_down
+        if not shutting_down:
+            _record_boundary_error(self, 'async_worker', 'async cancellation', error)
+    except Exception as error:
+        _record_boundary_error(self, 'async_worker', 'async completion', error)
 
 
-def _check_rate_limit(self, event_type: AudioEventType) -> bool:
-    with self._lock:
-        if event_type not in self._rate_limits:
-            return True
-
-        min_interval, max_count = self._rate_limits[event_type]
-        now = datetime.now()
-        timestamps = self._last_event_times[event_type]
-        cutoff = now.timestamp() - min_interval
-        timestamps = [ts for ts in timestamps if ts.timestamp() > cutoff]
-
-        if len(timestamps) >= max_count:
-            return False
-        return True
-
-
-def _update_rate_limit(self, event_type: AudioEventType) -> None:
-    with self._lock:
-        if event_type in self._rate_limits:
-            timestamps = self._last_event_times.get(event_type, [])
-            timestamps.append(datetime.now())
-            min_interval, _ = self._rate_limits[event_type]
-            cutoff = datetime.now().timestamp() - min_interval
-            timestamps = [ts for ts in timestamps if ts.timestamp() > cutoff]
-            self._last_event_times[event_type] = timestamps
-
-
-def _record_event(
-    self,
-    event_type: AudioEventType,
-    data: Any,
-    metadata: EventMetadata,
-    subscribers_notified: int,
-    processing_time_ms: float,
-) -> None:
-    record = EventRecord(
-        event_type=event_type,
-        data=data,
-        metadata=metadata,
-        subscribers_notified=subscribers_notified,
-        processing_time_ms=processing_time_ms,
-    )
-    with self._lock:
-        self._event_history.append(record)
-
-
-def get_event_history(
-    self,
-    event_type: Optional[AudioEventType] = None,
-    limit: int = 100,
-    since: Optional[datetime] = None,
-) -> List[EventRecord]:
-    with self._lock:
-        history = list(self._event_history)
-        if event_type is not None:
-            history = [e for e in history if e.event_type == event_type]
-        if since is not None:
-            history = [e for e in history if e.metadata.timestamp > since]
-        return history[-limit:]
-
-
-def clear_history(self) -> None:
-    with self._lock:
-        self._event_history.clear()
-
-
-def get_stats(self) -> Dict[str, Any]:
-    with self._lock:
-        uptime = (datetime.now() - self._stats['start_time']).total_seconds()
-
-        subscriptions_by_type = {}
-        for event_type, subs in self._subscribers.items():
-            active_count = sum(1 for s in subs if s.is_active)
-            if active_count > 0:
-                subscriptions_by_type[event_type.value] = active_count
-
-        events_by_type = {}
-        for record in self._event_history:
-            et = record.event_type.value
-            events_by_type[et] = events_by_type.get(et, 0) + 1
-
-        return {
-            'uptime_seconds': uptime,
-            'events_published': self._stats['events_published'],
-            'events_processed': self._stats['events_processed'],
-            'subscriptions_active': self._stats['subscriptions_created'] - self._stats['subscriptions_removed'],
-            'subscriptions_created': self._stats['subscriptions_created'],
-            'subscriptions_removed': self._stats['subscriptions_removed'],
-            'errors': self._stats['errors'],
-            'history_size': len(self._event_history),
-            'subscriptions_by_type': subscriptions_by_type,
-            'events_by_type': events_by_type,
-            'rate_limits': {k.value: v for k, v in self._rate_limits.items()},
-            'shutting_down': self._shutting_down,
-        }
-
-
-def reset_stats(self) -> None:
-    with self._lock:
-        self._stats = {
-            'events_published': 0,
-            'events_processed': 0,
-            'subscriptions_created': 0,
-            'subscriptions_removed': 0,
-            'errors': 0,
-            'start_time': datetime.now(),
-        }
-        self._event_counter = 0
-
-
-def wait_for_event(
-    self,
-    event_type: AudioEventType,
-    timeout: float = 10.0,
-    condition: Optional[Callable[[Any], bool]] = None,
-) -> Optional[Any]:
-    event_received = threading.Event()
-    received_data = []
-
-    def callback(data: Any) -> None:
-        if condition is None or condition(data):
-            received_data.append(data)
-            event_received.set()
-
-    subscription = self.subscribe(
-        event_type=event_type,
-        callback=callback,
-        one_time=True,
-    )
-
-    try:
-        if event_received.wait(timeout=timeout):
-            return received_data[0] if received_data else None
-        return None
-    finally:
-        self.unsubscribe(event_type, subscription=subscription)
-
-
-def get_active_subscriptions(self) -> Dict[AudioEventType, List[str]]:
-    with self._lock:
-        result = {}
-        for event_type, subscriptions in self._subscribers.items():
-            active_ids = [s.subscription_id for s in subscriptions if s.is_active]
-            if active_ids:
-                result[event_type] = active_ids
-        return result
-
-
-_AUDIO_EVENT_BUS_PUBLISH_METHODS: tuple[tuple[str, Callable[..., Any]], ...] = (
-    ("publish", publish),
-    ("_publish_internal", _publish_internal),
-    ("_execute_callback", _execute_callback),
-    ("_handle_async_result", _handle_async_result),
-    ("_check_rate_limit", _check_rate_limit),
-    ("_update_rate_limit", _update_rate_limit),
-    ("_record_event", _record_event),
-    ("get_event_history", get_event_history),
-    ("clear_history", clear_history),
-    ("get_stats", get_stats),
-    ("reset_stats", reset_stats),
-    ("wait_for_event", wait_for_event),
-    ("get_active_subscriptions", get_active_subscriptions),
+_AUDIO_EVENT_BUS_PUBLISH_METHODS: tuple[tuple[str, Callable[..., object]], ...] = (
+    ('publish', publish),
+    ('_publish_internal', _publish_internal),
+    ('_execute_callback', _execute_callback),
+    ('_handle_async_result', _handle_async_result),
+    ('_enter_publish', _enter_publish),
+    ('_leave_publish', _leave_publish),
+    ('_record_event', _record_event),
+    ('get_event_history', get_event_history),
+    ('clear_history', clear_history),
+    ('get_stats', get_stats),
+    ('reset_stats', reset_stats),
+    ('wait_for_event', wait_for_event),
+    ('get_active_subscriptions', get_active_subscriptions),
 )
 
 
-def install_audio_event_bus_publish_behavior(event_bus_cls: type[Any]) -> None:
-    """Install audio event bus publish behavior on the central coordinator.
+def install_audio_event_bus_publish_behavior(event_bus_cls: type[object]) -> None:
+    """Install publish and observation behavior on the central coordinator.
 
     Edge cases:
-        1. An empty binding name mutates an unintended bus attribute.
-        2. A split module exports a non-callable binding and breaks event publication wiring.
-        3. Duplicate binding names silently shadow an earlier publish bus method.
+        1. Empty binding names would mutate unintended bus attributes.
+        2. Non-callable split-module bindings would break runtime wiring.
+        3. Duplicate binding names would silently shadow an earlier method.
     """
     if getattr(event_bus_cls, '_audio_event_bus_publish_behavior_attached', False):
         return
-
     seen_names: set[str] = set()
     for attribute_name, method in _AUDIO_EVENT_BUS_PUBLISH_METHODS:
         if not attribute_name:
@@ -342,13 +398,9 @@ def install_audio_event_bus_publish_behavior(event_bus_cls: type[Any]) -> None:
             raise TypeError(f'AudioEventBus publish binding {attribute_name} must be callable')
         setattr(event_bus_cls, attribute_name, method)
         seen_names.add(attribute_name)
-
     setattr(event_bus_cls, '_audio_event_bus_publish_behavior_attached', True)
 
 
-def attach_audio_event_bus_publish_behavior(event_bus_cls: type[Any]) -> None:
-    """Compatibility shim for historical attach_* imports.
-
-    Prefer install_audio_event_bus_publish_behavior() from the central coordinator path.
-    """
+def attach_audio_event_bus_publish_behavior(event_bus_cls: type[object]) -> None:
+    """Compatibility shim for historical attach_* imports."""
     install_audio_event_bus_publish_behavior(event_bus_cls)

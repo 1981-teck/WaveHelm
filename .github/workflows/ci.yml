@@ -5,82 +5,65 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  COVERAGE_FILE: ${{ runner.temp }}/wavehelm.coverage
+
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   source-hygiene:
     name: Source hygiene
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Reject generated or sensitive tracked files
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import subprocess
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
 
-          tracked = subprocess.check_output(
-              ["git", "ls-files"],
-              text=True,
-              encoding="utf-8",
-          ).splitlines()
-          forbidden_parts = {
-              "__pycache__",
-              ".pytest_cache",
-              ".mypy_cache",
-              ".ruff_cache",
-              "build",
-              "dist",
-          }
-          forbidden_suffixes = {".pyc", ".pyo", ".db", ".sqlite", ".sqlite3", ".log"}
-          violations = []
-          for raw_path in tracked:
-              path = Path(raw_path)
-              if any(part in forbidden_parts for part in path.parts):
-                  violations.append(raw_path)
-                  continue
-              if path.suffix.lower() in forbidden_suffixes:
-                  violations.append(raw_path)
-                  continue
-              if len(path.parts) >= 2 and path.parts[0] == "tests" and path.parts[1].startswith("_"):
-                  violations.append(raw_path)
-          if violations:
-              message = "Forbidden tracked release files:\n" + "\n".join(sorted(violations))
-              raise SystemExit(message)
+      - name: Run source hygiene gate
+        run: >-
+          python tools/source_hygiene.py check --root .
+          --output ci-evidence/source-hygiene.json
 
-          required_licenses = {
-              "Apache-2.0.txt",
-              "BSD-3-Clause.txt",
-              "LGPL-2.1.txt",
-              "MIT.txt",
-              "MIT-CMU.txt",
-              "PSF-2.0.txt",
-              "wxWindows-Library-Licence-3.1.txt",
-          }
-          licenses_root = Path("src/resources/legal/licenses")
-          present = {path.name for path in licenses_root.glob("*.txt")}
-          missing = sorted(required_licenses - present)
-          if missing:
-              raise SystemExit("Missing required license texts: " + ", ".join(missing))
-          PY
+      - name: Upload source hygiene evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wavehelm-source-hygiene
+          path: ci-evidence/source-hygiene.json
+          if-no-files-found: error
+          retention-days: 30
 
   test-and-build:
     name: Windows / Python ${{ matrix.python-version }}
     runs-on: windows-latest
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -88,101 +71,250 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
+      - name: Verify checked-in development lock
+        shell: pwsh
+        run: |
+          python -m pip install --isolated --disable-pip-version-check --no-input --only-binary=:all: packaging==25.0
+          if ($LASTEXITCODE -ne 0) { throw "lock validator bootstrap failed" }
+          $target = '${{ matrix.python-version }}'.Replace('.', '')
+          python tools/resolve_windows_lock.py verify --requirements requirements-dev.txt --bundle "locks/windows-py$target-dev"
+          if ($LASTEXITCODE -ne 0) { throw "checked-in development lock missing or invalid" }
+
       - name: Install pinned dependencies
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-dev.txt
+          $target = '${{ matrix.python-version }}'.Replace('.', '')
+          python -m pip install --isolated --disable-pip-version-check --no-input `
+            --only-binary=:all: pip==26.2.1
+          if ($LASTEXITCODE -ne 0) { throw "pip bootstrap failed" }
+          python -m pip install --isolated --disable-pip-version-check --no-input `
+            --only-binary=:all: --require-hashes `
+            -r "locks/windows-py${target}-dev/requirements.lock"
+          if ($LASTEXITCODE -ne 0) { throw "dependency installation failed" }
+
+      - name: Run pre-test source gate
+        run: >-
+          python tools/source_hygiene.py check --root .
+          --output pre-test-source-hygiene.json
 
       - name: Run complete source test suite
-        run: python -m pytest -q tests
+        run: >-
+          python -m coverage run --branch --source=src -m pytest -p no:cacheprovider -q tests
+          --junitxml=${{ runner.temp }}/wavehelm-tests.junit.xml
+
+      - name: Export coverage evidence
+        if: always()
+        run: >-
+          python -m coverage json
+          -o ${{ runner.temp }}/wavehelm-coverage.json
+
+      - name: Remove authorized test output
+        run: >-
+          python tools/source_hygiene.py clean --root .
+          --output source-cleanup.json
+
+      - name: Run post-test source gate
+        run: >-
+          python tools/source_hygiene.py check --root .
+          --output post-test-source-hygiene.json
 
       - name: Build wheel and source distribution
-        run: python -m build
+        run: python -m build --no-isolation
 
-      - name: Upload build artifacts
-        if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@v4
+      - name: Upload build and gate evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: wavehelm-python-distributions
-          path: dist/*
+          name: wavehelm-python-distributions-${{ matrix.python-version }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/wavehelm-tests.junit.xml
+            ${{ runner.temp }}/wavehelm-coverage.json
+            dist/*
+            pre-test-source-hygiene.json
+            source-cleanup.json
+            post-test-source-hygiene.json
           if-no-files-found: error
+          retention-days: 14
 
   supply-chain:
-    name: Dependency audit and SBOM
+    name: Windows dependency graph, audit and SBOM / Python ${{ matrix.python-version }}
     runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
 
-      - name: Install release audit tooling
+      - name: Verify checked-in runtime lock
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pip-audit==2.10.1 cyclonedx-bom==7.3.1
+          python -m pip install --isolated --disable-pip-version-check --no-input --only-binary=:all: packaging==25.0
+          if ($LASTEXITCODE -ne 0) { throw "lock validator bootstrap failed" }
+          $target = '${{ matrix.python-version }}'.Replace('.', '')
+          python tools/resolve_windows_lock.py verify --requirements requirements.txt --bundle "locks/windows-py$target-runtime"
+          if ($LASTEXITCODE -ne 0) { throw "checked-in runtime lock missing or invalid" }
 
-      - name: Create isolated Windows runtime environment
+      - name: Bootstrap pinned audit tooling and record provenance
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
+          $evidence = Join-Path $PWD 'supply-chain-evidence'
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          & python -m pip install --isolated --disable-pip-version-check --no-input `
+            --only-binary=:all: pip==26.2.1
+          $pipExit = $LASTEXITCODE
+          [IO.File]::WriteAllText(
+            "$evidence/pip-bootstrap-exit-code.txt", "$pipExit`n", $utf8
+          )
+          & python -m pip install --isolated --disable-pip-version-check --no-input `
+            --only-binary=:all: `
+            --report "$evidence/audit-tool-install-report.json" `
+            pip-audit==2.10.1 cyclonedx-bom==7.3.1
+          $toolExit = $LASTEXITCODE
+          [IO.File]::WriteAllText(
+            "$evidence/audit-tool-install-exit-code.txt", "$toolExit`n", $utf8
+          )
+          & python tools/supply_chain.py tool-versions `
+            --root . `
+            --output "$evidence/supply-chain-tool-versions.json"
+          $versionExit = $LASTEXITCODE
+          [IO.File]::WriteAllText(
+            "$evidence/tool-versions-exit-code.txt", "$versionExit`n", $utf8
+          )
+          $global:LASTEXITCODE = 0
+
+      - name: Create isolated Windows runtime graph
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $evidence = Join-Path $PWD 'supply-chain-evidence'
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          $target = '${{ matrix.python-version }}'.Replace('.', '')
           python -m venv --without-pip .wavehelm-runtime-audit
-          python -m pip --python .wavehelm-runtime-audit install -r requirements.txt
-          python -m pip --python .wavehelm-runtime-audit check
-          python -m pip --python .wavehelm-runtime-audit freeze --all | Out-File -Encoding utf8 runtime-freeze.txt
+          if ($LASTEXITCODE -ne 0) { throw "runtime environment creation failed" }
+          & python -m pip --isolated --python .wavehelm-runtime-audit install `
+            --disable-pip-version-check --no-input --only-binary=:all: `
+            --report "$evidence/runtime-install-report.json" `
+            --require-hashes -r "locks/windows-py${target}-runtime/requirements.lock"
+          $installExit = $LASTEXITCODE
+          [IO.File]::WriteAllText(
+            "$evidence/runtime-install-exit-code.txt", "$installExit`n", $utf8
+          )
+          $check = (& python -m pip --isolated --python .wavehelm-runtime-audit check `
+            2>&1 | Out-String).TrimEnd()
+          $checkExit = $LASTEXITCODE
+          [IO.File]::WriteAllText(
+            "$evidence/runtime-pip-check.txt", $check + [Environment]::NewLine, $utf8
+          )
+          [IO.File]::WriteAllText(
+            "$evidence/runtime-pip-check-exit-code.txt", "$checkExit`n", $utf8
+          )
+          $freeze = (& python -m pip --isolated --python .wavehelm-runtime-audit freeze `
+            --all 2>&1 | Out-String).TrimEnd()
+          $freezeExit = $LASTEXITCODE
+          [IO.File]::WriteAllText(
+            "$evidence/runtime-freeze.txt", $freeze + [Environment]::NewLine, $utf8
+          )
+          [IO.File]::WriteAllText(
+            "$evidence/runtime-freeze-exit-code.txt", "$freezeExit`n", $utf8
+          )
+          $global:LASTEXITCODE = 0
 
-      - name: Audit installed runtime dependency graph
-        id: dependency-audit
-        continue-on-error: true
+      - name: Collect vulnerability, SBOM and license evidence
         shell: pwsh
         run: |
-          $sitePackages = Join-Path $PWD '.wavehelm-runtime-audit\Lib\site-packages'
-          python -m pip_audit --path $sitePackages --format json --output pip-audit.json
-
-      - name: Generate reproducible transitive CycloneDX SBOM
-        shell: pwsh
-        run: |
-          cyclonedx-py environment .wavehelm-runtime-audit `
+          $ErrorActionPreference = 'Continue'
+          $evidence = Join-Path $PWD 'supply-chain-evidence'
+          $sitePackages = Join-Path $PWD '.wavehelm-runtime-audit/Lib/site-packages'
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          & python -m pip_audit --path $sitePackages --strict `
+            --progress-spinner off --timeout 30 `
+            --format json --output "$evidence/pip-audit.json"
+          $auditExit = $LASTEXITCODE
+          [IO.File]::WriteAllText(
+            "$evidence/pip-audit-exit-code.txt", "$auditExit`n", $utf8
+          )
+          & python -m cyclonedx_py environment .wavehelm-runtime-audit `
             --output-reproducible `
             --pyproject pyproject.toml `
             --mc-type application `
             --sv 1.6 `
             --of JSON `
-            -o sbom.cdx.json
+            -o "$evidence/sbom.cdx.json"
+          $sbomExit = $LASTEXITCODE
+          [IO.File]::WriteAllText(
+            "$evidence/sbom-exit-code.txt", "$sbomExit`n", $utf8
+          )
+          & python tools/supply_chain.py licenses `
+            --root . `
+            --site-packages $sitePackages `
+            --output "$evidence/runtime-license-inventory.json"
+          $licenseExit = $LASTEXITCODE
+          [IO.File]::WriteAllText(
+            "$evidence/license-inventory-exit-code.txt", "$licenseExit`n", $utf8
+          )
+          $global:LASTEXITCODE = 0
 
-      - name: Verify SBOM contains runtime transitive dependencies
-        shell: pwsh
-        run: |
-          @'
-          import json
-          from pathlib import Path
+      - name: Validate installed-graph evidence
+        run: >-
+          python tools/supply_chain.py validate --root .
+          --evidence-dir supply-chain-evidence
 
-          bom = json.loads(Path("sbom.cdx.json").read_text(encoding="utf-8"))
-          names = {str(component.get("name", "")).lower() for component in bom.get("components", [])}
-          required = {"pillow", "pywin32", "comtypes", "cffi", "contourpy", "fonttools", "python-dateutil"}
-          missing = sorted(required - names)
-          if missing:
-              raise SystemExit("SBOM missing expected Windows runtime/transitive components: " + ", ".join(missing))
-          '@ | python -
+      - name: Verify evidence manifest
+        if: always()
+        run: >-
+          python tools/supply_chain.py verify --root .
+          --evidence-dir supply-chain-evidence
+          --output supply-chain-manifest-verify.json
 
       - name: Upload supply-chain evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: wavehelm-supply-chain-evidence
+          name: wavehelm-supply-chain-evidence-${{ matrix.python-version }}-${{ github.sha }}
           path: |
-            pip-audit.json
-            runtime-freeze.txt
-            sbom.cdx.json
-          if-no-files-found: warn
+            supply-chain-evidence/*
+            supply-chain-manifest-verify.json
+          if-no-files-found: error
+          retention-days: 30
+  abi-layout:
+    name: Windows SDK ABI/layout / Python 3.12
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Enforce dependency audit result
-        if: steps.dependency-audit.outcome != 'success'
-        run: exit 1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Compile Windows SDK reference and verify ctypes ABI
+        run: python tools/verify_windows_abi.py --root . --output abi-evidence
+
+      - name: Upload ABI evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wavehelm-windows-abi-${{ github.sha }}
+          path: abi-evidence/*
+          if-no-files-found: error
+          retention-days: 30

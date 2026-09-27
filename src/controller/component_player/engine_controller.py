@@ -6,6 +6,8 @@ Wrapper per l'interazione diretta con gli engine audio e video.
 from __future__ import annotations
 
 import logging
+import math
+from enum import Enum, auto
 import threading
 from typing import Any, Callable, Optional
 
@@ -17,6 +19,17 @@ logger = logging.getLogger(__name__)
 
 ENGINE_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError, OSError)
 STATE_EXCEPTIONS = (AttributeError, RuntimeError, TypeError, ValueError)
+
+
+class SeekDispatch(Enum):
+    """Admission only: neither variant certifies a completed native seek."""
+
+    REJECTED = auto()
+    FORWARDED_UNCONFIRMED = auto()
+
+    def __bool__(self) -> bool:
+        """Require explicit inspection; forwarding is not completion."""
+        raise TypeError("Inspect SeekDispatch explicitly; forwarding is not completion")
 
 
 class EngineController:
@@ -173,19 +186,55 @@ class EngineController:
         self.state_manager.update_state(PlayerState.LOADING)
         return True
 
+    def _stop_before_play(self, next_media_type: MediaType | None) -> None:
+        """Stop the current medium while preserving a live video adapter for video-to-video switches.
+
+        Reusing the adapter avoids rebuilding the full Media Foundation engine for every
+        adjacent video track. Explicit stop, shutdown, video-to-audio transitions and error
+        recovery still use the existing full-close path.
+        """
+        try:
+            if hasattr(self.audio_engine, 'stop'):
+                self.audio_engine.stop()
+        except ENGINE_EXCEPTIONS as exc:
+            logger.warning("[EngineController] Errore fermando l'audio engine: %s", exc)
+
+        state = self.state_manager.state
+        preserve_video_adapter = (
+            next_media_type == MediaType.VIDEO
+            and state in (PlayerState.PLAYING_VIDEO, PlayerState.PAUSED_VIDEO, PlayerState.LOADING)
+        )
+        if self.video_controller and self._should_stop_video():
+            try:
+                if preserve_video_adapter:
+                    logger.debug(
+                        '[EngineController] VIDEO->VIDEO source switch: skipping native stop; '
+                        'SetSource will replace the current MediaEngine resource.'
+                    )
+                elif hasattr(self.video_controller, 'stop'):
+                    self.video_controller.stop(close_adapter=True)
+                elif hasattr(self.video_controller, 'shutdown'):
+                    self.video_controller.shutdown()
+                elif hasattr(self.video_controller, 'close'):
+                    self.video_controller.close()
+            except ENGINE_EXCEPTIONS as exc:
+                logger.warning('[EngineController] Errore fermando il video controller: %s', exc)
+
+        if not self.state_manager.is_stopped():
+            self.state_manager.update_state(PlayerState.STOPPED)
+
     def play(self, media: MediaFile, loop: bool) -> bool:
         if self._is_shutting_down:
             logger.debug('[EngineController] play() ignored: shutting down.')
             return False
 
-        self.stop()
+        media_type = getattr(media, 'media_type', None)
+        self._stop_before_play(media_type)
 
         path = getattr(media, 'path', None)
         if not path:
             logger.error('[EngineController] Il media file non ha un percorso.')
             return False
-
-        media_type = getattr(media, 'media_type', None)
 
         if media_type == MediaType.AUDIO:
             logger.info('[EngineController] Playing AUDIO: %s', path)
@@ -284,25 +333,53 @@ class EngineController:
         if not self.state_manager.is_stopped():
             self.state_manager.update_state(PlayerState.STOPPED)
 
-    def seek(self, position_sec: float) -> None:
-        if self._is_shutting_down:
-            logger.debug('[EngineController] seek() ignored: shutting down.')
-            return
+    def seek(self, position_sec: float) -> SeekDispatch:
+        """Forward one guarded request, without claiming native seek completion.
 
-        state = self.state_manager.state
-        if state == PlayerState.LOADING:
-            logger.debug('[EngineController] seek() ignored: state=LOADING.')
-            return
-
+        Non-finite/bool inputs, inactive states, missing revision guards and
+        synchronous backend refusal are rejected. A failed forwarded request
+        keeps old end notifications invalidated. Native async completion and
+        concurrent transport serialization remain separate qualifications.
+        """
+        if self._is_shutting_down or type(position_sec) not in (int, float):
+            return SeekDispatch.REJECTED
         try:
+            seconds = float(position_sec)
+            if not math.isfinite(seconds):
+                return SeekDispatch.REJECTED
+            state = self.state_manager.state
             if state in (PlayerState.PLAYING_AUDIO, PlayerState.PAUSED_AUDIO):
-                if hasattr(self.audio_engine, 'seek'):
-                    self.audio_engine.seek(position_sec)
+                attribute = "audio_engine"
             elif state in (PlayerState.PLAYING_VIDEO, PlayerState.PAUSED_VIDEO):
-                if self.video_controller and hasattr(self.video_controller, 'seek'):
-                    self.video_controller.seek(position_sec)
-        except ENGINE_EXCEPTIONS as exc:
-            logger.error('[EngineController] Errore durante il seek: %s', exc, exc_info=True)
+                attribute = "video_controller"
+            else:
+                return SeekDispatch.REJECTED
+            backend = getattr(self, attribute, None)
+            invoke = getattr(backend, "seek", None)
+            invalidate = getattr(self.state_manager, "invalidate_end_observation", None)
+            revision = getattr(self.state_manager, "playback_revision", None)
+            if not callable(invoke) or not callable(invalidate) or type(revision) is not int:
+                return SeekDispatch.REJECTED
+            invalidate()
+            expected_revision = revision + 1
+            if (self.state_manager.state is not state or self._is_shutting_down
+                    or self.state_manager.playback_revision != expected_revision
+                    or getattr(self, attribute, None) is not backend):
+                return SeekDispatch.REJECTED
+            result = invoke(max(0.0, seconds))
+            if (self.state_manager.state is not state or self._is_shutting_down
+                    or self.state_manager.playback_revision != expected_revision
+                    or getattr(self, attribute, None) is not backend):
+                return SeekDispatch.REJECTED
+            # Legacy void methods supply no acknowledgement; this status says
+            # only that the guarded call returned without an explicit refusal.
+            if result is None or result is True:
+                return SeekDispatch.FORWARDED_UNCONFIRMED
+            return SeekDispatch.REJECTED
+        except (AttributeError, RuntimeError, TypeError, ValueError, OSError, OverflowError) as exc:
+            logger.warning('[EngineController] Seek dispatch failed (%s): %s',
+                           type(exc).__name__, exc, exc_info=True)
+            return SeekDispatch.REJECTED
 
     def set_volume(self, volume: float) -> None:
         if self._is_shutting_down:

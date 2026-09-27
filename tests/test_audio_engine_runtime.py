@@ -183,7 +183,7 @@ def test_play_ignores_video_files_without_starting_mixer(monkeypatch):
     assert engine.event_bus.published[-1][0] == AudioEventType.FEEDBACK_MESSAGE
 
 
-def test_seek_falls_back_when_legacy_seek_path_fails(monkeypatch):
+def test_unsupported_seek_is_rejected_without_false_target_event(monkeypatch):
     engine = DummyEngine()
     engine._current_file = 'song.wav'
 
@@ -198,13 +198,14 @@ def test_seek_falls_back_when_legacy_seek_path_fails(monkeypatch):
             raise pygame.error('set_pos failed')
 
     fake_music = _install_fake_music(monkeypatch, playback, LegacySeekMusic())
-    playback.seek(engine, 42.0)
+    assert playback.seek(engine, 42.0) is False
 
     assert fake_music.stop_calls == 1
     assert engine._current_position == 0.0
     assert engine._seek_base == 0.0
-    assert engine._start_progress_loop_called is True
-    assert engine.event_bus.published[-1] == (AudioEventType.SEEK, {'position': 42.0})
+    assert engine._start_progress_loop_called is False
+    assert fake_music.set_pos_calls == []
+    assert engine.event_bus.published == []
 
 
 def test_set_volume_updates_state_and_publishes_without_mixer(monkeypatch):

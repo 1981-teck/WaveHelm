@@ -1,7 +1,7 @@
 from __future__ import annotations
-
 import ctypes
 import logging
+import sys
 from ctypes import byref, c_uint32, c_uint64, c_void_p, wintypes, cast
 
 from src.video.component_base.com_helpers import _check_hr, _hr_to_hex
@@ -13,7 +13,6 @@ from src.video.component_base.definitions import (
     IUnknown,
     MF_MEDIA_ENGINE_CALLBACK,
     MF_MEDIA_ENGINE_PLAYBACK_HWND,
-    MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT,
     _IsWindow,
 )
 from src.video.component_base.iid_registry import IID_IMFMediaEngineEx
@@ -22,7 +21,22 @@ from src.video.component_base.mf_helpers import MFCreateAttributes, MFCreateMedi
 from src.video.component_base.utils import is_success, safe_release
 
 from .media_engine_core_shared import MediaEngineError
+from .media_engine_ownership import EngineResources, EngineReference, owned_release_pair
+from .wic_native import configure_frame_server
+from .wic_renderer import WicRenderer
+from .wic_pipeline import FramePipeline, wic_selected
 from .media_engine_events import _MediaEngineNotifyCOM
+from .media_engine_seek_events import create_bound_notify
+
+from .media_engine_core_stream_api import (
+    _ensure_media_engine_ex_on_com_thread,
+    _call_media_engine_ex_method_on_com_thread,
+    _normalize_stream_index,
+    _get_number_of_streams_on_com_thread,
+    _get_stream_selection_on_com_thread,
+    _set_stream_selection_on_com_thread,
+    _apply_stream_selections_on_com_thread,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +80,6 @@ _GetClientRect = _bind_function(
     restype=wintypes.BOOL,
 )
 
-
 def _validate_hwnd_for_rendering(self, hwnd: int) -> None:
     if not hwnd or int(hwnd) <= 0:
         raise MediaEngineError(f"HWND non valido: {hwnd}")
@@ -96,98 +109,131 @@ def _validate_hwnd_for_rendering(self, hwnd: int) -> None:
     if not bool(_IsWindowVisible(h)):
         logger.debug("[MediaEngineCore] HWND non visibile al momento della creazione (best effort). hwnd=%s", hwnd)
 
+def _configure_notify(self, attr_ptr, resources: EngineResources | None = None) -> tuple[object, object]:
+    """Configure the native attribute/notify boundary; errors abort engine creation."""
+    adapter_obj = self._adapter_ref()
+    if adapter_obj is None:
+        raise MediaEngineError("Adapter non più disponibile")
 
-def _create_engine_on_com_thread(self, hwnd: int) -> None:
-    with self._state_lock:
-        if self._shutdown_requested:
-            raise MediaEngineError("Shutdown già richiesto: impossibile creare l'engine.")
-        if self._media_engine:
-            return
+    notify_handler = create_bound_notify(self, adapter_obj, _MediaEngineNotifyCOM)
+    if not notify_handler:
+        raise MediaEngineError("Creazione _MediaEngineNotifyCOM fallita")
 
-    logger.info("[MediaEngineCore] Inizio creazione engine su thread COM...")
-    self._validate_hwnd_for_rendering(hwnd)
-
+    if resources is not None:
+        resources.notify_handler = notify_handler
     try:
-        attributes = MFCreateAttributes(10)
-        if not attributes:
-            raise MediaEngineError("MFCreateAttributes ha restituito None")
-
-        attr_ptr = attributes.as_interface(IMFAttributes)
-        if not attr_ptr:
-            raise MediaEngineError("Impossibile ottenere IMFAttributes dall'oggetto attributes")
-
-        self._imfattributes_set_uint64(attr_ptr, MF_MEDIA_ENGINE_PLAYBACK_HWND, c_uint64(int(hwnd)))
-
-        adapter_obj = self._adapter_ref()
-        if adapter_obj is None:
-            raise MediaEngineError("Adapter non più disponibile")
-
-        notify_handler = _MediaEngineNotifyCOM(adapter_obj)
-        if not notify_handler:
-            raise MediaEngineError("Creazione _MediaEngineNotifyCOM fallita")
-
-        try:
-            notify_iunknown = notify_handler.QueryInterface(CT_IUnknown)
-        except CORE_SETUP_EXCEPTIONS as exc:
-            logger.error("[MediaEngineCore] QI a IUnknown fallito per notify handler: %s", exc, exc_info=True)
-            raise
-
-        if notify_iunknown is not None:
-            self._imfattributes_set_unknown(attr_ptr, MF_MEDIA_ENGINE_CALLBACK, notify_iunknown)
-
-        try:
-            self._imfattributes_set_uint32(
-                attr_ptr,
-                MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT,
-                c_uint32(int(0x00000015)),
-            )
-        except CORE_SETUP_EXCEPTIONS:
-            logger.debug("[MediaEngineCore] Output format non impostato (best effort).", exc_info=True)
-
-        factory = MFCreateMediaEngine()
-        if not factory:
-            raise MediaEngineError("MFCreateMediaEngineClassFactory ha restituito None")
-
-        factory_ptr = factory.as_interface(IMFMediaEngineClassFactory)
-        if not factory_ptr:
-            raise MediaEngineError("Impossibile ottenere IMFMediaEngineClassFactory dalla factory")
-
-        vtbl_factory = factory_ptr.contents.lpVtbl.contents
-        p_engine = ctypes.POINTER(IMFMediaEngine)()
-        hr = int(vtbl_factory.CreateInstance(factory_ptr, c_uint32(0), attr_ptr, byref(p_engine)))
-        _check_hr(hr, "IMFMediaEngineClassFactory::CreateInstance")
-
-        if not p_engine:
-            raise MediaEngineError("CreateInstance ha restituito un puntatore engine nullo")
-
-        media_engine_ex = self._query_media_engine_ex_on_com_thread(p_engine)
-
-        with self._state_lock:
-            self._attributes = attributes
-            self._factory = factory
-            self._media_engine_ex = media_engine_ex
-            self._notify_handler = notify_handler
-            self._notify_iunknown = notify_iunknown
-            self._media_engine = p_engine
-            self._playback_hwnd = int(hwnd)
-            self._engine_generation += 1
-        logger.info("[MediaEngineCore] MediaEngine creato con successo.")
-
+        notify_iunknown = notify_handler.QueryInterface(CT_IUnknown)
+        if resources is not None:
+            resources.notify_iunknown = notify_iunknown
     except CORE_SETUP_EXCEPTIONS as exc:
-        logger.error("[MediaEngineCore] Creazione engine fallita: %s", exc, exc_info=True)
-        self.shutdown()
+        logger.error("[MediaEngineCore] QI a IUnknown fallito per notify handler: %s", exc, exc_info=True)
         raise
 
+    if notify_iunknown is not None:
+        self._imfattributes_set_unknown(attr_ptr, MF_MEDIA_ENGINE_CALLBACK, notify_iunknown)
+
+    return notify_handler, notify_iunknown
+
+def _create_engine_on_com_thread(self, hwnd: int) -> None:
+    resources = EngineResources()
+    with self._state_lock:
+        if self._shutdown_requested:
+            raise MediaEngineError('Shutdown requested: cannot create engine')
+        if getattr(self, '_creation_resources', None) is not None or getattr(self, '_retired_engine_resources', None) is not None:
+            raise MediaEngineError('Prior engine creation/cleanup is unresolved')
+        if self._media_engine:
+            return
+        self._creation_resources = resources
+    committed = False
+    try:
+        logger.info('[MediaEngineCore] Creating owned engine on COM thread.')
+        self._validate_hwnd_for_rendering(hwnd)
+        _build_engine_resources(self, resources, hwnd)
+        engine = resources.engine.borrow()
+        extension = resources.extension.borrow()
+        with self._state_lock:
+            if self._shutdown_requested or self._creation_resources is not resources:
+                raise MediaEngineError('Engine creation invalidated before publication')
+            self._attributes, self._factory = resources.attributes, resources.factory
+            self._notify_handler, self._notify_iunknown = resources.notify_handler, resources.notify_iunknown
+            self._engine_references = resources
+            self._wic_pipeline = resources.frame_pipeline
+            self._media_engine, self._media_engine_ex = engine, extension
+            self._playback_hwnd = int(hwnd)
+            self._engine_generation += 1
+            self._creation_resources = None
+            committed = True
+        logger.info('[MediaEngineCore] Owned engine created successfully.')
+    except CORE_SETUP_EXCEPTIONS:
+        logger.exception('[MediaEngineCore] Engine creation failed.')
+        raise
+    finally:
+        if not committed:
+            resources.creation_error = sys.exception()
+            resources.rollback_creation(self)
+
+def _configure_wic_source_policy(self, engine) -> None:
+    """WIC-only AUTO preload/no-autoplay; setter failure/readback drift/HWND entry fail closed."""
+    _check_hr(int(self._call_engine_ptr_method(engine, 'SetAutoPlay', wintypes.BOOL(0))), 'IMFMediaEngine::SetAutoPlay(FALSE)')
+    _check_hr(int(self._call_engine_ptr_method(engine, 'SetPreload', c_uint32(4))), 'IMFMediaEngine::SetPreload(AUTOMATIC)')
+    preload = int(self._call_engine_ptr_method(engine, 'GetPreload'))
+    autoplay = bool(self._call_engine_ptr_method(engine, 'GetAutoPlay'))
+    if preload != 4 or autoplay:
+        raise MediaEngineError(f'WIC source policy readback mismatch: preload={preload} autoplay={autoplay}')
+    logger.info('[WIC] SOURCE_POLICY preload=4 autoplay=false')
+
+def _build_engine_resources(self, resources: EngineResources, hwnd: int) -> None:
+    """Capture each acquisition before the next fallible step; no native calls under locks."""
+    resources.attributes = MFCreateAttributes(10)
+    if not resources.attributes:
+        raise MediaEngineError('MFCreateAttributes returned no owner')
+    attr_ptr = resources.attributes.as_interface(IMFAttributes)
+    if not attr_ptr:
+        raise MediaEngineError('Missing IMFAttributes view')
+    use_wic = wic_selected()
+    if use_wic:
+        configure_frame_server(cast(attr_ptr, c_void_p))
+    else:
+        self._imfattributes_set_uint64(attr_ptr, MF_MEDIA_ENGINE_PLAYBACK_HWND, c_uint64(int(hwnd)))
+    _configure_notify(self, attr_ptr, resources)
+    resources.factory = MFCreateMediaEngine()
+    if not resources.factory:
+        raise MediaEngineError('MFCreateMediaEngine returned no factory owner')
+    factory_ptr = resources.factory.as_interface(IMFMediaEngineClassFactory)
+    if not factory_ptr:
+        raise MediaEngineError('Missing IMFMediaEngineClassFactory view')
+    output = cast(resources.engine.receive(), ctypes.POINTER(ctypes.POINTER(IMFMediaEngine)))
+    hr = int(factory_ptr.contents.lpVtbl.contents.CreateInstance(factory_ptr, c_uint32(0), attr_ptr, output))
+    resources.engine.confirm(hr)
+    _check_hr(hr, 'IMFMediaEngineClassFactory::CreateInstance')
+    if use_wic:
+        _configure_wic_source_policy(self, resources.engine.borrow())
+    if not resources.engine:
+        raise MediaEngineError('CreateInstance returned a null engine')
+    self._query_media_engine_ex_on_com_thread(resources.engine.borrow(), owner=resources.extension)
+    if use_wic:
+        adapter = self._adapter_ref()
+        resources.wic_renderer = WicRenderer(identity=lambda: self._active_source)
+        resources.wic_renderer.open(cast(resources.engine.borrow(), c_void_p))
+        resources.frame_pipeline = FramePipeline(resources.wic_renderer,
+            adapter.submit_frame_to_com_thread, adapter.frame_ready, int(hwnd), pump_ready=adapter.frame_pump_ready)
+        logger.info('[WIC] BACKEND_READY format=87 no_hwnd_attribute=true')
 
 def _release_current_engine_on_com_thread(self, reason: str) -> None:
     with self._state_lock:
+        owned_release_pair(self)  # Reject provenance mismatch before detaching anything.
+        resources = getattr(self, '_engine_references', None)
+        if getattr(self, '_retired_engine_resources', None) is not None:
+            raise MediaEngineError('Prior rebind cleanup remains unresolved')
+        self._engine_references = None
+        self._wic_pipeline = None
+        self._retired_engine_resources = resources
         media_engine = self._media_engine
         factory = self._factory
         media_engine_ex = self._media_engine_ex
         attributes = self._attributes
         notify_iunknown = self._notify_iunknown
         notify_handler = self._notify_handler
-
         self._media_engine = None
         self._factory = None
         self._media_engine_ex = None
@@ -198,8 +244,15 @@ def _release_current_engine_on_com_thread(self, reason: str) -> None:
         self._source = None
         self._active_source = None
         self._playback_hwnd = None
-
     logger.info("[MediaEngineCore] Rilascio engine corrente (reason=%s).", reason)
+    if resources is not None:
+        try:
+            resources.cleanup_once(self, stop=True)
+        finally:
+            if resources.reclaimed:
+                with self._state_lock:
+                    self._retired_engine_resources = None
+        return
     try:
         safe_release(media_engine_ex, "media engine ex")
         safe_release(media_engine, "media engine")
@@ -209,12 +262,18 @@ def _release_current_engine_on_com_thread(self, reason: str) -> None:
         _ = notify_handler
         self._release_notify_iunknown(notify_iunknown)
 
-
 def _try_rebind_video_window_on_com_thread(self, hwnd: int) -> bool:
     hwnd = int(hwnd)
     with self._state_lock:
         if self._shutdown_requested or not self._media_engine:
             return False
+    pipeline = getattr(self, '_wic_pipeline', None)
+    if pipeline is not None:
+        self._validate_hwnd_for_rendering(hwnd)
+        pipeline.rebind(hwnd)
+        with self._state_lock:
+            self._playback_hwnd = hwnd
+        return True
 
     try:
         self._call_vtable_method("SetVideoWindow", c_void_p(hwnd))
@@ -229,8 +288,7 @@ def _try_rebind_video_window_on_com_thread(self, hwnd: int) -> bool:
         )
         return False
 
-
-def _query_media_engine_ex_on_com_thread(self, engine_ptr):
+def _query_media_engine_ex_on_com_thread(self, engine_ptr, *, owner: EngineReference | None = None):
     if not engine_ptr:
         return None
 
@@ -238,13 +296,17 @@ def _query_media_engine_ex_on_com_thread(self, engine_ptr):
         iunknown = cast(engine_ptr, ctypes.POINTER(IUnknown))
         query_interface = iunknown.contents.lpVtbl.contents.QueryInterface
         out_ptr = c_void_p()
+        output = byref(out_ptr) if owner is None else owner.receive()
         hr = int(
             query_interface(
                 cast(iunknown, c_void_p),
                 byref(IID_IMFMediaEngineEx),
-                byref(out_ptr),
+                output,
             )
         )
+        if owner is not None:
+            owner.confirm(hr)
+            out_ptr = owner.ptr or c_void_p()
         if not is_success(hr) or not out_ptr.value:
             logger.debug("[MediaEngineCore] IMFMediaEngineEx non disponibile (hr=%s).", _hr_to_hex(hr))
             return None
@@ -253,127 +315,9 @@ def _query_media_engine_ex_on_com_thread(self, engine_ptr):
         return cast(out_ptr, ctypes.POINTER(IUnknown))
     except CORE_SETUP_EXCEPTIONS:
         logger.debug("[MediaEngineCore] QueryInterface(IMFMediaEngineEx) failed.", exc_info=True)
+        if owner is not None and owner.unresolved:
+            raise
         return None
-
-
-def _ensure_media_engine_ex_on_com_thread(self):
-    """Return a cached IMFMediaEngineEx pointer or acquire it deterministically.
-
-    Edge cases:
-        1. The engine can exist while the extended interface has not been queried yet.
-        2. QueryInterface can fail transiently, so the helper must leave the cached state consistent.
-        3. Shutdown or teardown can race with callers, so a missing engine must fail fast with a stable error.
-    """
-    with self._state_lock:
-        if self._shutdown_requested:
-            raise MediaEngineError('Shutdown già richiesto: impossibile usare IMFMediaEngineEx.')
-        engine_ptr = self._media_engine
-        cached_engine_ex = self._media_engine_ex
-
-    if cached_engine_ex is not None:
-        return cached_engine_ex
-    if not engine_ptr:
-        raise MediaEngineError('MediaEngine non inizializzato: IMFMediaEngineEx non disponibile.')
-
-    media_engine_ex = self._query_media_engine_ex_on_com_thread(engine_ptr)
-    if media_engine_ex is None:
-        raise MediaEngineError('IMFMediaEngineEx non disponibile sul backend corrente.')
-
-    with self._state_lock:
-        if self._shutdown_requested:
-            raise MediaEngineError('Shutdown già richiesto: impossibile usare IMFMediaEngineEx.')
-        self._media_engine_ex = media_engine_ex
-    return media_engine_ex
-
-
-def _call_media_engine_ex_method_on_com_thread(self, method_name: str, *args):
-    """Invoke an IMFMediaEngineEx method through the canonical vtable specs.
-
-    Edge cases:
-        1. The extended interface can be absent on older runtimes and must fail with a precise error.
-        2. Method signatures are bound by the shared vtable map, so unsupported names must not silently fall back.
-        3. COM-thread callers can race with shutdown, so interface acquisition must be revalidated before dispatch.
-    """
-    media_engine_ex = self._ensure_media_engine_ex_on_com_thread()
-    return self._call_engine_ptr_method(media_engine_ex, method_name, *args)
-
-
-def _normalize_stream_index(self, stream_index: int) -> wintypes.DWORD:
-    """Normalize stream indices before touching Media Foundation stream-selection APIs.
-
-    Edge cases:
-        1. UI or probe layers can pass strings or floats, so the helper coerces to int deterministically.
-        2. Negative indices must be rejected early to avoid undefined COM calls.
-        3. Extremely large values must remain bounded by DWORD conversion rules without wraparound surprises.
-    """
-    try:
-        normalized = int(stream_index)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f'Indice stream non valido: {stream_index!r}') from exc
-    if normalized < 0 or normalized > 0xFFFFFFFF:
-        raise ValueError(f'Indice stream non valido: {stream_index!r}')
-    return wintypes.DWORD(normalized)
-
-
-def _get_number_of_streams_on_com_thread(self) -> int:
-    """Read the Media Foundation stream count from IMFMediaEngineEx.
-
-    Edge cases:
-        1. Backends without IMFMediaEngineEx must fail explicitly instead of pretending there are zero streams.
-        2. HRESULT failures must surface with context so higher layers can choose fallback strategies.
-        3. The returned DWORD must be normalized to a plain Python int for deterministic downstream logic.
-    """
-    stream_count = wintypes.DWORD(0)
-    hr = int(self._call_media_engine_ex_method_on_com_thread('GetNumberOfStreams', byref(stream_count)))
-    _check_hr(hr, 'IMFMediaEngineEx::GetNumberOfStreams')
-    return max(0, int(stream_count.value))
-
-
-def _get_stream_selection_on_com_thread(self, stream_index: int) -> bool:
-    """Return whether a specific Media Foundation stream is currently selected.
-
-    Edge cases:
-        1. Invalid indices must be rejected before they hit the COM boundary.
-        2. Stream-selection queries can fail independently from engine creation and must keep a precise error context.
-        3. BOOL results must be normalized to a Python bool so UI and retry logic remain deterministic.
-    """
-    normalized_index = self._normalize_stream_index(stream_index)
-    selected = wintypes.BOOL(0)
-    hr = int(self._call_media_engine_ex_method_on_com_thread('GetStreamSelection', normalized_index, byref(selected)))
-    _check_hr(hr, 'IMFMediaEngineEx::GetStreamSelection')
-    return bool(selected.value)
-
-
-def _set_stream_selection_on_com_thread(self, stream_index: int, selected: bool) -> None:
-    """Select or deselect a Media Foundation stream on the COM thread.
-
-    Edge cases:
-        1. Invalid indices must be rejected before the COM call to avoid undefined backend behavior.
-        2. BOOL coercion must be explicit so callers cannot leak arbitrary integers across the boundary.
-        3. HRESULT failures must remain actionable for higher-level retry logic and UI feedback.
-    """
-    normalized_index = self._normalize_stream_index(stream_index)
-    hr = int(
-        self._call_media_engine_ex_method_on_com_thread(
-            'SetStreamSelection',
-            normalized_index,
-            wintypes.BOOL(1 if selected else 0),
-        )
-    )
-    _check_hr(hr, 'IMFMediaEngineEx::SetStreamSelection')
-
-
-def _apply_stream_selections_on_com_thread(self) -> None:
-    """Commit pending Media Foundation stream-selection changes.
-
-    Edge cases:
-        1. Some runtimes accept individual selection changes but fail when applying them as a batch.
-        2. The helper must preserve the exact HRESULT context for deterministic fallback diagnostics.
-        3. Callers may invoke apply repeatedly, so the method stays idempotent on successful backends.
-    """
-    hr = int(self._call_media_engine_ex_method_on_com_thread('ApplyStreamSelections'))
-    _check_hr(hr, 'IMFMediaEngineEx::ApplyStreamSelections')
-
 
 def ensure_engine(self, hwnd: int) -> None:
     hwnd = int(hwnd)
@@ -404,7 +348,6 @@ def ensure_engine(self, hwnd: int) -> None:
 
     adapter_obj.call_on_com_thread("rebind_or_recreate_engine", _rebind_or_recreate)
 
-
 def _imfattributes_set_uint64(self, attrs_ptr, key_guid, value) -> None:
     guid_ptr = byref(key_guid) if hasattr(key_guid, "Data1") else byref(key_guid)
     c_val = value if isinstance(value, c_uint64) else c_uint64(int(value))
@@ -424,7 +367,6 @@ def _imfattributes_set_uint64(self, attrs_ptr, key_guid, value) -> None:
             int(c_val.value),
         )
         raise OSError(f"IMFAttributes::SetUINT64 failed hr=0x{hr_u32:08X}")
-
 
 def _imfattributes_set_uint32(self, attrs_ptr, key_guid, value) -> None:
     guid_ptr = byref(key_guid) if hasattr(key_guid, "Data1") else byref(key_guid)
@@ -446,7 +388,6 @@ def _imfattributes_set_uint32(self, attrs_ptr, key_guid, value) -> None:
         )
         raise OSError(f"IMFAttributes::SetUINT32 failed hr=0x{hr_u32:08X}")
 
-
 def _imfattributes_set_unknown(self, attrs_ptr, key_guid, unk_obj) -> None:
     guid_ptr = byref(key_guid) if hasattr(key_guid, "Data1") else byref(key_guid)
     unk_ptr = unk_obj
@@ -465,7 +406,6 @@ def _imfattributes_set_unknown(self, attrs_ptr, key_guid, unk_obj) -> None:
             repr(key_guid),
         )
         raise OSError(f"IMFAttributes::SetUnknown failed hr=0x{hr_u32:08X}")
-
 
 _MEDIA_ENGINE_CORE_SETUP_METHODS = (
     ("_validate_hwnd_for_rendering", _validate_hwnd_for_rendering),
@@ -486,7 +426,6 @@ _MEDIA_ENGINE_CORE_SETUP_METHODS = (
     ("_imfattributes_set_unknown", _imfattributes_set_unknown),
 )
 
-
 def install_media_engine_core_setup_behavior(cls) -> None:
     """Install MediaEngineCore setup behavior on the central class.
 
@@ -502,7 +441,6 @@ def install_media_engine_core_setup_behavior(cls) -> None:
         setattr(cls, name, method)
 
     setattr(cls, "_media_engine_core_setup_behavior_attached", True)
-
 
 def attach_media_engine_core_setup_behavior(cls) -> None:
     """Compatibility shim for historical attach_* imports.

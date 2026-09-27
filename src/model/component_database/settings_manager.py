@@ -28,7 +28,7 @@ class SettingsManager:
 
     def set_app_setting(self, key: str, value: str):
         query = """
-        INSERT INTO app_settings (key, value) 
+        INSERT INTO app_settings (key, value)
         VALUES (?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """

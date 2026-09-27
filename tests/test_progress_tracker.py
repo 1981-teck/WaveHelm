@@ -131,7 +131,7 @@ def test_poll_worker_restarts_current_track_when_loop_enabled_but_current_play_i
         SimpleNamespace(
             audio_engine=SimpleNamespace(
                 get_duration=lambda: 10.0,
-                get_position=lambda: 9.9,
+                get_position=lambda: 10.0,
                 _current_play_uses_native_loop=False,
             ),
             video_controller=None,

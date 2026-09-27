@@ -8,6 +8,8 @@ Orchestra i componenti per la gestione della coda, dello stato e degli engine.
 from __future__ import annotations
 
 import logging
+from src.playback_observation import ProgressSnapshot
+from .playback_view import PlaybackView, read_playback_view
 import threading
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -18,13 +20,13 @@ from src.model.media_file import MediaFile, MediaType
 try:
     from .component_player.playback_state_manager import PlaybackStateManager, PlayerState
     from .component_player.queue_manager import QueueManager
-    from .component_player.engine_controller import EngineController
+    from .component_player.engine_controller import EngineController, SeekDispatch
     from .component_player.player_event_handler import PlayerEventHandler
     from .component_player.progress_tracker import ProgressTracker
 except ImportError:  # pragma: no cover
     from .component_player.playback_state_manager import PlaybackStateManager, PlayerState  # type: ignore
     from .component_player.queue_manager import QueueManager  # type: ignore
-    from .component_player.engine_controller import EngineController  # type: ignore
+    from .component_player.engine_controller import EngineController, SeekDispatch  # type: ignore
     from .component_player.player_event_handler import PlayerEventHandler  # type: ignore
     from .component_player.progress_tracker import ProgressTracker  # type: ignore
 
@@ -94,16 +96,23 @@ class PlayerController:
             self._event_handler.connect_main_view_signals(main_view)
 
     def _stop_current_playback_before_switch(self, target_track: Optional[MediaFile]) -> None:
-        """Ferma il playback corrente prima di cambiare contesto traccia."""
+        """Stop the current medium unless EngineController must preserve a live video adapter.
+
+        Video-to-video switches are delegated to EngineController.play(), which already stops
+        the current video without closing its adapter before loading the next source. Other
+        transitions retain the existing full-stop behavior.
+        """
         if self.state_manager.is_stopped():
             return
 
         was_video = self.state_manager.is_video()
         target_is_video = getattr(target_track, 'media_type', None) == MediaType.VIDEO
+        if was_video and target_is_video:
+            return
 
         self.engine_controller.stop()
 
-        if was_video and not target_is_video:
+        if was_video:
             self._publish_event(AudioEventType.CANCEL_VIDEO_PLAYBACK)
 
     # --- API Pubblica per Controlli di Riproduzione ---
@@ -203,9 +212,16 @@ class PlayerController:
             )
             self.play_action(track)
 
-    def seek(self, position_sec: float):
-        """Seek della traccia corrente."""
-        self.engine_controller.seek(position_sec)
+    def seek(self, position_sec: float) -> SeekDispatch:
+        """Return guarded dispatch status, never a completed-position claim.
+
+        Shutdown refuses new requests. Missing/invalid admission results do not
+        become success; the engine validates state, position and seek revision.
+        """
+        if self._is_shutdown:
+            return SeekDispatch.REJECTED
+        result = self.engine_controller.seek(position_sec)
+        return result if isinstance(result, SeekDispatch) else SeekDispatch.REJECTED
 
     def set_volume(self, value: float):
         """Imposta volume (0..1)."""
@@ -233,7 +249,7 @@ class PlayerController:
             {'shuffled': enabled, 'shuffle_enabled': enabled},
         )
 
-    def _capture_track_end_signature(self) -> Optional[Tuple[Optional[str], int, str]]:
+    def _capture_track_end_signature(self) -> Optional[Tuple[Optional[str], int, str, Optional[int]]]:
         """Capture a deterministic snapshot for a pending end-of-track transition.
 
         Edge cases handled:
@@ -251,39 +267,43 @@ class PlayerController:
 
         current_path = getattr(current_track, 'path', None)
         current_index = int(getattr(self.queue_manager, 'index', -1))
-        return (current_path, current_index, state_name)
+        revision = getattr(self.state_manager, 'playback_revision', None)
+        return (current_path, current_index, state_name,
+                revision if type(revision) is int else None)
 
-    def _is_track_end_signature_current(self, expected: Tuple[Optional[str], int, str]) -> bool:
+    def _is_track_end_signature_current(self, expected: Tuple[Optional[str], int, str, Optional[int]]) -> bool:
         """Validate that a deferred track-end callback still matches the active track."""
         current_signature = self._capture_track_end_signature()
         if current_signature is None:
             return False
         return current_signature == expected
 
-    def _handle_track_end(self):
-        """Gestisce la fine di una traccia (chiamato dal ProgressTracker)."""
+    def _handle_track_end(self) -> bool:
+        """Accept an end notification; False means not accepted, so the tracker retains it."""
         if getattr(self, '_is_shutdown', False):
             logger.debug('PlayerController: _handle_track_end ignored during shutdown')
-            return
+            return False
 
         expected_signature = self._capture_track_end_signature()
         if expected_signature is None:
             logger.debug('PlayerController: _handle_track_end ignored without current track context')
-            return
+            return False
 
         if threading.current_thread() is threading.main_thread():
             self._run_track_end_transition(expected_signature)
-            return
+            return True
 
         if self._track_end_dispatch_pending:
             logger.debug('PlayerController: track-end transition gia accodata sul thread UI.')
-            return
+            return False
 
         self._track_end_dispatch_pending = True
         dispatch = lambda: self._run_track_end_transition(expected_signature)
         if not self._dispatch_to_ui_thread(dispatch):
-            logger.debug('PlayerController: fallback track-end transition sul thread corrente.')
-            self._run_track_end_transition(expected_signature)
+            self._track_end_dispatch_pending = False
+            logger.warning('Track end awaits a functioning UI dispatcher; no worker-thread transition.')
+            return False
+        return True
 
     def shutdown(self):
         """Ferma tutti i processi in background (idempotente)."""
@@ -337,39 +357,24 @@ class PlayerController:
             logger.debug('[PlayerController Facade] UI dispatch failed.', exc_info=True)
             return False
 
-    def _run_track_end_transition(self, expected_signature: Optional[Tuple[Optional[str], int, str]] = None) -> None:
-        """Esegue la logica di fine traccia sul thread UI."""
-        try:
-            if getattr(self, '_is_shutdown', False):
-                logger.debug('PlayerController: _run_track_end_transition ignored during shutdown')
-                return
-
-            if expected_signature is not None and not self._is_track_end_signature_current(expected_signature):
-                logger.debug('PlayerController: stale track-end transition ignored for %r', expected_signature)
-                return
-
-            logger.debug('PlayerController: Gestione fine traccia.')
-            should_repeat_current = bool(self.state_manager._loop)
-            repeat_getter = getattr(self.engine_controller, 'should_repeat_current_track', None)
-            if callable(repeat_getter):
-                try:
-                    should_repeat_current = bool(repeat_getter())
-                except DISPATCH_EXCEPTIONS:
-                    logger.debug('PlayerController: should_repeat_current_track fallback failed.', exc_info=True)
-
-            if should_repeat_current:
-                logger.info('Looping traccia corrente.')
-                if self.queue_manager.current_track:
-                    self.play_action(self.queue_manager.current_track)
-            else:
-                logger.info('Passaggio alla traccia successiva.')
-                self.next()
-        finally:
-            self._track_end_dispatch_pending = False
+    def _run_track_end_transition(self, expected_signature: Optional[Tuple[Optional[str], int, str, Optional[int]]] = None) -> None:
+        """Keep the public facade hook; terminal UI handoff owns the transition cluster."""
+        from .playback_terminal import run_track_end_transition
+        run_track_end_transition(self, expected_signature)
 
     @property
     def current_track(self) -> Optional[MediaFile]:
         return self.queue_manager.current_track
+
+    def get_progress_snapshot(self) -> "ProgressSnapshot | None":
+        """Return only cached bound observations; never query native clocks on the caller."""
+        if self._is_shutdown:
+            return None
+        return self.progress_tracker.get_progress_snapshot()
+
+    def get_playback_view(self) -> PlaybackView | None:
+        """Return guarded current state and a cached sample; no native polling."""
+        return read_playback_view(self)
 
     def get_duration(self) -> float:
         """Espone la durata corrente tramite il tracker di progresso."""

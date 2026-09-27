@@ -18,3 +18,5 @@ def test_manual_manifest_and_files_exist():
         assert 'WaveHelm' in content
         assert '<h1>' in content
         assert '<h2>' in content
+        assert '1.0.2' in content
+        assert 'version 1.0.1' not in content.lower()

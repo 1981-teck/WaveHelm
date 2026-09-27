@@ -39,19 +39,21 @@ def init_com() -> None:
         CoInitializeEx.restype = ctypes.c_long
 
         hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+        # HRESULT is signed on Windows; compare and display its 32-bit code.
+        hr_code = hr & 0xFFFFFFFF
 
         if hr == 0:  # S_OK
             logger.info("[COM] CoInitializeEx(STA) successful.")
         elif hr == 1:  # S_FALSE
             logger.info("[COM] CoInitializeEx(STA) already initialized on this thread.")
-        elif hr == RPC_E_CHANGED_MODE:
+        elif hr_code == RPC_E_CHANGED_MODE:
             logger.warning(
                 "[COM] CoInitializeEx(STA) failed: thread mode was already set "
                 "(likely MTA by another component)."
             )
         else:
             logger.error(
-                f"[COM] CoInitializeEx(STA) failed with unexpected HRESULT: 0x{hr:08X}"
+                f"[COM] CoInitializeEx(STA) failed with unexpected HRESULT: 0x{hr_code:08X}"
             )
     except COM_BOOTSTRAP_EXCEPTIONS as e:  # pragma: no cover - defensive logging
         logger.error(f"[COM] Failed to explicitly initialize COM: {e}", exc_info=True)

@@ -141,6 +141,34 @@ def create_imf_media_engine_adapter(event_bus: object | None = None) -> Any:
     return IMFMediaEngineAdapter(event_bus=event_bus)
 
 
+def _release_creation(seq: int, error: str | None = None) -> None:
+    """Release an uncommitted attempt only while this thread still owns it."""
+    with _adapter_lock:
+        if (not _state.creating or _state.creation_seq != seq
+                or _state.creator_tid != threading.get_ident()):
+            return
+        _state.created = False
+        _state.last_error = error
+        _state.instance = None
+        _state.creating = False
+        _state.creator_tid = None
+        _adapter_cv.notify_all()
+
+
+def _run_creation_callback(callback: Callable[[object], None], adapter: object) -> None:
+    """Keep the dynamic callback policy and release only this thread's callback."""
+    try:
+        callback(adapter)
+    except FACTORY_STATE_EXCEPTIONS:
+        logger.debug("[Factory] creation_callback failed (ignored)", exc_info=True)
+    finally:
+        with _adapter_lock:
+            if _state.callback_tid == threading.get_ident():
+                _state.callback_running = False
+                _state.callback_tid = None
+                _adapter_cv.notify_all()
+
+
 def create_best_video_adapter(event_bus: object | None = None):
     """Crea (se necessario) e ritorna l'adapter singleton 'migliore' disponibile.
 
@@ -185,11 +213,11 @@ def create_best_video_adapter(event_bus: object | None = None):
         _state.last_error = None
         _state.creation_seq += 1
         seq = _state.creation_seq
-        logger.info("[Factory] Creating adapter singleton (seq=%s)...", seq)
 
     # Creazione fuori lock (evita blocchi e deadlock)
     adapter: Any = None
     try:
+        logger.info("[Factory] Creating adapter singleton (seq=%s)...", seq)
         adapter = create_imf_media_engine_adapter(event_bus=event_bus)
 
         # Commit dello stato sotto lock, notifica i waiter
@@ -213,29 +241,24 @@ def create_best_video_adapter(event_bus: object | None = None):
         return adapter
 
     except FACTORY_IMPORT_EXCEPTIONS as exc:
-        with _adapter_lock:
-            _state.created = False
-            _state.last_error = str(exc)
-            _state.instance = None
-            _state.creating = False
-            _state.creator_tid = None
-            _adapter_cv.notify_all()
+        _release_creation(seq, str(exc))
 
         logger.error("[Factory] Failed to create adapter (seq=%s): %s", getattr(_state, "creation_seq", "?"), exc, exc_info=True)
         raise
 
     finally:
-        # Callback fuori lock: evita re-entrancy/deadlock.
+        # A failed attempt must not retain ownership or erase a later generation.
+        _release_creation(seq)
+        # Callbacks execute outside the lock, after successful publication only.
         if cb_to_run is not None:
-            try:
-                cb_to_run(adapter_for_cb)
-            except FACTORY_STATE_EXCEPTIONS:
-                logger.debug("[Factory] creation_callback failed (ignored)", exc_info=True)
-            finally:
-                with _adapter_lock:
-                    _state.callback_running = False
-                    _state.callback_tid = None
-                    _adapter_cv.notify_all()
+            _run_creation_callback(cb_to_run, adapter_for_cb)
+
+
+def peek_video_adapter() -> object | None:
+    """Read-only GUI lookup. Never create/restart an adapter to obtain a frame."""
+    with _adapter_lock:
+        instance = _state.instance
+        return None if instance is None or _is_adapter_closed(instance) else instance
 
 
 def get_video_adapter():

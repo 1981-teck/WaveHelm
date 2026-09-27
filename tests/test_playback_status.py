@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from src.controller import playback_status
+from src.controller.component_player.engine_controller import SeekDispatch
 from src.model.media_file import MediaType
 
 
@@ -133,20 +134,23 @@ def test_get_position_prefers_player_then_video_then_audio():
 
 
 
-def test_seek_to_uses_video_without_audio_fallback_and_audio_for_audio_tracks():
+def test_seek_to_uses_facade_without_direct_video_or_audio_fallback():
+    # Contract intentionally tightened: a real facade owns state/revision checks.
     video = DummyVideoController()
-    video.seek_result = False
     audio = DummyAudioEngine()
-    player = DummyPlayer(track=SimpleNamespace(media_type=MediaType.VIDEO), audio_engine=audio, video_controller=video)
+    player = DummyPlayer(track=SimpleNamespace(media_type=MediaType.VIDEO),
+                         audio_engine=audio, video_controller=video)
+    requests = []
+    player.seek = lambda seconds: requests.append(seconds) or SeekDispatch.REJECTED
     assert playback_status.seek_to(player, 9.0) is False
-    assert audio.calls == []
-    assert video.calls == [('seek', 9.0)]
+    assert requests == [9.0]
+    assert audio.calls == video.calls == []
 
-    audio = DummyAudioEngine()
-    player = DummyPlayer(track=SimpleNamespace(media_type=MediaType.AUDIO), audio_engine=audio)
+    player.current_track = SimpleNamespace(media_type=MediaType.AUDIO)
+    player.seek = lambda seconds: requests.append(seconds) or SeekDispatch.FORWARDED_UNCONFIRMED
     assert playback_status.seek_to(player, -4.0) is True
-    assert audio.calls == [('seek', 0.0)]
-
+    assert requests == [9.0, 0.0]
+    assert audio.calls == video.calls == []
 
 
 def test_failures_return_none_or_false_cleanly():

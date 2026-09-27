@@ -134,6 +134,45 @@ def test_imfattributes_wrappers_use_vtable_and_raise_on_missing_or_failed_calls(
         media_engine_core_setup._imfattributes_set_unknown(object(), failing_unknown, guid, DummyIUnknown())
 
 
+
+def test_configure_notify_does_not_force_video_output_format_in_hwnd_rendering_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rendering-mode engine creation must not force a frame-server DXGI output format.
+
+    Edge cases:
+        - Callback ownership still reaches IMFAttributes::SetUnknown exactly once.
+        - The optional frame-server output-format attribute stays absent in HWND mode.
+        - Notify QueryInterface failure remains a hard creation failure.
+    """
+    calls = []
+
+    class Notify:
+        def QueryInterface(self, interface: object) -> object:
+            calls.append(('qi', interface))
+            return 'notify-iunknown'
+
+    class Core:
+        def _adapter_ref(self) -> object:
+            return object()
+
+        def _imfattributes_set_unknown(self, attrs: object, guid: object, value: object) -> None:
+            calls.append(('unknown', attrs, guid, value))
+
+        def _imfattributes_set_uint32(self, attrs: object, guid: object, value: object) -> None:
+            calls.append(('uint32', attrs, guid, value))
+
+    def make_notify(*_args: object) -> Notify:
+        return Notify()
+
+    monkeypatch.setattr(media_engine_core_setup, 'create_bound_notify', make_notify)
+
+    handler, notify_iunknown = media_engine_core_setup._configure_notify(Core(), 'attrs')
+
+    assert isinstance(handler, Notify)
+    assert notify_iunknown == 'notify-iunknown'
+    assert [entry[0] for entry in calls] == ['qi', 'unknown']
+
 def test_media_engine_ex_helpers_cache_query_and_dispatch_methods():
     core = DummyCore()
 
@@ -195,3 +234,42 @@ def test_media_engine_ex_helpers_raise_on_hresult_failures():
 
     with pytest.raises(RuntimeError):
         media_engine_core_setup._apply_stream_selections_on_com_thread(core)
+
+
+def test_wic_source_policy_sets_and_reads_back_preload_and_autoplay() -> None:
+    calls = []
+    class Core:
+        def _call_engine_ptr_method(self, engine, name, *args):
+            calls.append((name, tuple(int(getattr(v, 'value', v)) for v in args)))
+            if name == 'GetPreload':
+                return 4
+            if name == 'GetAutoPlay':
+                return 0
+            return 0
+    media_engine_core_setup._configure_wic_source_policy(Core(), object())
+    assert calls == [
+        ('SetAutoPlay', (0,)),
+        ('SetPreload', (4,)),
+        ('GetPreload', ()),
+        ('GetAutoPlay', ()),
+    ]
+
+
+def test_wic_source_policy_rejects_readback_drift() -> None:
+    class Core:
+        def _call_engine_ptr_method(self, engine, name, *args):
+            if name == 'GetPreload':
+                return 3
+            if name == 'GetAutoPlay':
+                return 0
+            return 0
+    with pytest.raises(media_engine_core_setup.MediaEngineError, match='source policy readback mismatch'):
+        media_engine_core_setup._configure_wic_source_policy(Core(), object())
+
+
+def test_wic_source_policy_rejects_native_setter_failure() -> None:
+    class Core:
+        def _call_engine_ptr_method(self, engine, name, *args):
+            return 0x80004005 if name == 'SetPreload' else 0
+    with pytest.raises(Exception, match='SetPreload'):
+        media_engine_core_setup._configure_wic_source_policy(Core(), object())

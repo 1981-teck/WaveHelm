@@ -15,6 +15,10 @@ from __future__ import annotations
 
 import ctypes as _ctypes
 import logging
+import sys as _sys
+from dataclasses import dataclass as _dataclass
+from enum import Enum as _Enum
+from typing import NamedTuple as _NamedTuple
 
 
 class _CtypesProxy:
@@ -145,6 +149,38 @@ def _coerce_ptr_value(ptr: Any) -> int:
         return 0
 
 
+class _ReleaseState(_Enum):
+    PREPARING = "preparing"
+    DISPATCHED = "dispatched"
+    RELEASED = "released"
+    NOT_DISPATCHED = "not_dispatched"
+    HELD = "held_not_dispatched"
+    UNCERTAIN = "uncertain"
+    TRANSFERRED = "transferred"
+
+
+class _ReleaseSnapshot(_NamedTuple):
+    address: int
+    generation: int
+    state: _ReleaseState
+    error: BaseException | None
+    refcount: int | None
+
+
+@_dataclass(slots=True)
+class _ReleaseAttempt:
+    pointer: _ctypes.c_void_p | None = None
+    address: int = 0
+    generation: int = 0
+    state: _ReleaseState = _ReleaseState.PREPARING
+    error: BaseException | None = None
+    refcount: int | None = None
+
+
+class _ComPtrBusyError(RuntimeError):
+    """Ownership cannot be consumed while a prior release remains unresolved."""
+
+
 class ComPtr:
     """RAII leggero per un puntatore COM.
 
@@ -153,13 +189,14 @@ class ComPtr:
     - castarlo in una POINTER(interface_type) quando richiesto
     """
 
-    __slots__ = ("_ptr", "_iface_type", "_lock", "_gen")
+    __slots__ = ("_ptr", "_iface_type", "_lock", "_gen", "_release_attempt")
 
     def __init__(self, ptr: Any = None, iface_type: Optional[Type[Any]] = None) -> None:
         self._ptr: Optional[ctypes.c_void_p] = None
         self._iface_type: Optional[Type[Any]] = iface_type
         self._lock = threading.RLock()
         self._gen: int = 0
+        self._release_attempt: _ReleaseAttempt | None = None
 
         if ptr is not None:
             self.attach(ptr, iface_type=iface_type)
@@ -197,67 +234,25 @@ class ComPtr:
         self._gen = (self._gen + 1) & 0x7FFFFFFF
 
     def attach(self, ptr: Any, iface_type: Optional[Type[Any]] = None) -> None:
-        """Attacca un puntatore (senza AddRef). Rilascia l'eventuale puntatore precedente.
+        """Transfer a pointer; same-address attachment keeps the current ownership.
 
-        Fix bug logico:
-        - se ptr rappresenta lo stesso address del puntatore già detenuto, NON chiama release()
-          (evita attach(self._ptr) che rilascia l'oggetto e poi lo ri-usa).
+        Replacement is published atomically before releasing the previous reference.
+        A rejected busy transfer leaves the incoming ownership with the caller.
         """
-        new_val = _coerce_ptr_value(ptr)
-
-        with self._lock:
-            cur_val = self._get_ptr_value_locked()
-            if new_val and cur_val and new_val == cur_val:
-                if iface_type is not None:
-                    self._iface_type = iface_type
-                return
-
-        # rilascia fuori dal confronto (ma ancora thread-safe perché release prende lock)
-        self.release()
-
-        with self._lock:
-            if iface_type is not None:
-                self._iface_type = iface_type
-
-            if not new_val:
-                self._ptr = None
-                self._bump_gen_locked()
-                return
-
-            self._ptr = ctypes.c_void_p(int(new_val))
-            self._bump_gen_locked()
+        attempt = self._exchange_pointer(ptr, iface_type, keep_same=True)
+        if attempt is not None:
+            self._run_release(attempt)
 
 
     def adopt(self, ptr: Any, iface_type: Optional[Type[Any]] = None) -> None:
-        """Adotta un puntatore come nuova ownership, rilasciando SEMPRE l'esistente.
+        """Transfer a NEW reference, even at the same address; never infer AddRef.
 
-        Differenza rispetto a attach():
-        - attach() è "safe" contro l'edge case `attach(self.ptr)` e quindi, se l'address
-          è identico, non rilascia l'oggetto (evita UAF).
-        - adopt() è pensato per il caso in cui il chiamante trasferisce un *nuovo* riferimento
-          (es. risultato di QueryInterface/AddRef) anche se l'address coincide per motivi
-          di aliasing: in tal caso è corretto rilasciare comunque il riferimento precedente.
-
-        Nota:
-        - se il chiamante passa solo un cast del puntatore esistente (senza AddRef),
-          adopt() può invalidare l'oggetto (UAF). Usare solo quando si è CERTI di trasferire
-          una nuova ownership/ref.
+        Only pass a separately acquired reference. A borrowed cast is not ownership.
+        Failed old-reference cleanup does not undo an already admitted replacement.
         """
-        # rilascia sempre il puntatore precedente
-        self.release()
-
-        new_val = _coerce_ptr_value(ptr)
-        with self._lock:
-            if iface_type is not None:
-                self._iface_type = iface_type
-
-            if not new_val:
-                self._ptr = None
-                self._bump_gen_locked()
-                return
-
-            self._ptr = ctypes.c_void_p(int(new_val))
-            self._bump_gen_locked()
+        attempt = self._exchange_pointer(ptr, iface_type, keep_same=False)
+        if attempt is not None:
+            self._run_release(attempt)
 
     def detach(self) -> Optional[ctypes.c_void_p]:
         """Ritorna il puntatore e disabilita il rilascio automatico."""
@@ -299,54 +294,139 @@ class ComPtr:
         return 0
 
     def release(self) -> int:
-        """Rilascia il puntatore COM (IUnknown::Release).
+        """Consume this ownership before dispatch, without locking foreign calls.
 
-        Miglioramenti:
-        - thread-safe: snapshot atomico del puntatore
-        - ritorna il refcount risultante (quando disponibile)
-        - non invalida self._ptr se Release fallisce con eccezione Python (evita perdere il riferimento
-          in condizioni anomale; caller può decidere cosa fare)
+        Duplicate entry while the slot is empty performs no call. Pre-dispatch
+        failures retain ownership; uncertain dispatches are never retried.
+        The legacy integer result is not a completion receipt: inspect release_snapshot.
+        """
+        attempt = self._exchange_pointer(None, None, keep_same=False, releasing=True)
+        return 0 if attempt is None else self._run_release(attempt)
+
+    @property
+    def release_snapshot(self) -> _ReleaseSnapshot | None:
+        """Return the latest attempt's immutable metadata and exact Python error.
+
+        One receipt is retained, not an unbounded journal. A zero return from
+        release()/safe_release() alone does not establish successful cleanup.
         """
         with self._lock:
-            val = self._get_ptr_value_locked()
-            gen = self._gen
-            if not val:
-                self._ptr = None
+            item = self._release_attempt
+            if item is None:
+                return None
+            values = (item.address, item.generation, item.state, item.error, item.refcount)
+        return _ReleaseSnapshot(*values)
+
+    def _exchange_pointer(self, ptr: object, iface_type: type[object] | None, *,
+                          keep_same: bool, releasing: bool = False) -> _ReleaseAttempt | None:
+        """Atomically exchange a live slot and reserve at most one old release.
+
+        Reentry with no replacement is a no-op. A preparing/uncertain attempt cannot
+        be displaced. Replacement during dispatch is allowed only into an empty slot.
+        No cast, allocation of pointer storage, logging or foreign call holds the lock.
+        """
+        new_val = _coerce_ptr_value(ptr)
+        replacement = ctypes.c_void_p(new_val) if new_val else None
+        attempt = _ReleaseAttempt()
+        with self._lock:
+            prior = self._release_attempt  # Keep prior exception/finalizer destruction unlocked.
+            cur_val = self._get_ptr_value_locked()
+            if prior is not None and prior.state in (_ReleaseState.HELD, _ReleaseState.UNCERTAIN):
+                raise _ComPtrBusyError("Prior release requires explicit ownership review")
+            if keep_same and new_val and new_val == cur_val:
+                if iface_type is not None:
+                    self._iface_type = iface_type
+                return None
+            if prior is not None and prior.state in (_ReleaseState.PREPARING, _ReleaseState.DISPATCHED):
+                if releasing and not cur_val:
+                    return None
+                if cur_val or prior.state is _ReleaseState.PREPARING:
+                    raise _ComPtrBusyError("A reference release is already in progress")
+            if cur_val:
+                attempt.pointer, attempt.address = self._ptr, cur_val
+                attempt.generation = self._gen
+                self._release_attempt = attempt
+            self._ptr = replacement
+            if iface_type is not None:
+                self._iface_type = iface_type
+            self._bump_gen_locked()
+        return attempt if cur_val else None
+
+    def _finish_release(self, item: _ReleaseAttempt, dispatched: bool,
+                        completed: bool, error: BaseException | None, refcount: int) -> None:
+        """Retain uncertainty; only a proven pre-dispatch failure may restore a slot."""
+        with self._lock:
+            item.error = None if completed else error
+            if completed:
+                item.refcount = refcount
+                item.state = _ReleaseState.RELEASED
+                item.pointer = None
+            elif dispatched:
+                item.state = _ReleaseState.UNCERTAIN
+            elif self._ptr is None:
+                self._ptr = item.pointer
+                item.pointer = None
+                item.state = _ReleaseState.NOT_DISPATCHED
                 self._bump_gen_locked()
-                return 0
+            else:
+                item.state = _ReleaseState.HELD
 
-        released_rc = 0
-        release_ok = False
-
+    def _run_release(self, item: _ReleaseAttempt) -> int:
+        """Resolve the vtable before dispatch; finalize even on process-control errors."""
+        dispatched = completed = False
+        failure: BaseException | None = None
+        result = 0
         try:
-            iunk = ctypes.cast(ctypes.c_void_p(val), ctypes.POINTER(IUnknown))
-            if iunk and iunk.contents and iunk.contents.lpVtbl:
-                released_rc = iunk.contents.lpVtbl.contents.Release(ctypes.cast(iunk, ctypes.c_void_p))
-                released_rc = int(released_rc) if released_rc is not None else 0
-                release_ok = True
-                logger.debug("ComPtr.release() rc=%s ptr=0x%016X", released_rc, val)
+            iunk = ctypes.cast(item.pointer, ctypes.POINTER(IUnknown))
+            if not iunk or not iunk.contents.lpVtbl:
+                raise ValueError("Missing IUnknown vtable for owned reference")
+            callback = iunk.contents.lpVtbl.contents.Release
+            if not callback:
+                raise ValueError("Missing IUnknown Release callback")
+            this = ctypes.cast(iunk, ctypes.c_void_p)
+            with self._lock:
+                item.state = _ReleaseState.DISPATCHED
+            dispatched = True
+            raw_result = callback(this)
+            result = int(raw_result) if raw_result is not None else 0
+            completed = True
         except COM_PTR_EXCEPTIONS as exc:
-            # Non deve mai propagare eccezioni dal finalizer; lascia il puntatore intatto.
-            logger.debug("Exception in ComPtr.release(): %s", exc, exc_info=True)
+            failure = exc
         finally:
-            if release_ok:
-                # Invalida solo se Release è stato chiamato con successo.
-                with self._lock:
-                    # se nel frattempo è stato rimpiazzato con un altro ptr, non toccarlo
-                    cur_val = self._get_ptr_value_locked()
-                    cur_gen = self._gen
-                    # Invalida solo se lo stato non è cambiato da quando abbiamo fatto lo snapshot.
-                    # Evita invalidazione erronea in caso di re-attach concorrente sullo stesso address
-                    # (es. riuso memoria) o in caso di operazioni concorrenti.
-                    if cur_val == val and cur_gen == gen:
-                        self._ptr = None
-                        self._bump_gen_locked()
+            self._finish_release(item, dispatched, completed,
+                                 failure if failure is not None else _sys.exception(), result)
+        if failure is not None:
+            logger.debug("Exception in ComPtr.release(): %s", failure,
+                         exc_info=(type(failure), failure, failure.__traceback__))
+        else:
+            logger.debug("ComPtr.release() rc=%s ptr=0x%016X", result, item.address)
+        return result
 
-        return released_rc
+    def detach_unreleased(self) -> Optional[ctypes.c_void_p]:
+        """Transfer ONLY a held reference whose foreign Release was never dispatched.
+
+        The current slot is untouched. Uncertain/in-flight references are rejected;
+        this is not permission to retry an ambiguous native operation.
+        """
+        with self._lock:
+            item = self._release_attempt
+            if item is None or item.state is not _ReleaseState.HELD:
+                raise _ComPtrBusyError("No proven undispatched held reference")
+            pointer = item.pointer
+            item.pointer = None
+            item.state = _ReleaseState.TRANSFERRED
+        return pointer
 
     def __del__(self) -> None:
-        # Best effort: mai sollevare
+        """Do not turn garbage collection into an implicit retry of a failed release."""
         try:
+            with self._lock:
+                prior = self._release_attempt
+                failed = prior is not None and prior.state in (
+                    _ReleaseState.NOT_DISPATCHED, _ReleaseState.HELD, _ReleaseState.UNCERTAIN)
+            if failed:
+                logger.debug("ComPtr.__del__ retained failed-release disposition; no retry")
+                return
             self.release()
         except COM_PTR_EXCEPTIONS as error:
             logger.debug("ComPtr.__del__ release failed: %s", error, exc_info=True)

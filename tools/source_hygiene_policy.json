@@ -1,0 +1,96 @@
+{
+  "allowed_untracked_paths": [
+    "ci-evidence/source-hygiene.json",
+    "post-test-source-hygiene.json",
+    "pre-test-source-hygiene.json",
+    "source-cleanup.json"
+  ],
+  "forbidden_parts": [
+    ".env",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    ".wavehelm-runtime-audit",
+    "__pycache__",
+    "build",
+    "dist",
+    "venv"
+  ],
+  "forbidden_suffixes": [
+    ".coverage",
+    ".db",
+    ".key",
+    ".log",
+    ".p12",
+    ".pem",
+    ".pfx",
+    ".pyc",
+    ".pyo",
+    ".sqlite",
+    ".sqlite3"
+  ],
+  "legacy_mixed_line_endings": [
+    "src/audio/audio_engine_dsp.py",
+    "src/model/song.py",
+    "src/utils/exceptions.py",
+    "src/utils/helpers.py",
+    "src/video/component_base/utils.py",
+    "tests/test_audio_engine_dsp.py",
+    "tests/test_audio_engine_helpers.py",
+    "tests/test_com_helpers.py",
+    "tests/test_com_thread_manager.py",
+    "tests/test_favorites_manager.py",
+    "tests/test_media_engine_events.py",
+    "tests/test_playlist_persistence_integration.py",
+    "tests/test_service_container.py",
+    "tests/test_video_component_base_utils.py"
+  ],
+  "legacy_oversize_files": {
+    "src/audio/effects.py": 478,
+    "src/audio/equalizer.py": 526,
+    "src/controller/component_player/player_event_handler_video.py": 657,
+    "src/controller/video_controller.py": 625,
+    "src/model/ambient_manager.py": 654,
+    "src/ui_wx/ambient_view.py": 462,
+    "src/ui_wx/effects_view.py": 521,
+    "src/ui_wx/equalizer_view.py": 685,
+    "src/ui_wx/main_view.py": 831,
+    "src/ui_wx/playlist_view.py": 718,
+    "src/ui_wx/settings_view.py": 679,
+    "src/ui_wx/visualizer_view.py": 898,
+    "tests/test_service_container.py": 481,
+    "tests/test_settings_security.py": 469,
+    "tests/test_wx_equalizer_view.py": 509,
+    "tests/wx_fakes.py": 684
+  },
+  "legacy_oversize_functions": {
+    "src/audio/audio_engine_progress.py::_start_progress_loop": 58,
+    "src/controller/component_player/player_event_handler_video.py::_start_video_playback": 57,
+    "src/controller/video_controller.py::VideoController.get_audio_track_options": 53
+  },
+  "legacy_runtime_asserts": [
+    "src/model/ambient_manager.py:417"
+  ],
+  "max_file_lines": 450,
+  "max_files": 10000,
+  "max_function_statements": 50,
+  "max_total_bytes": 268435456,
+  "required_paths": [
+    ".github/workflows/ci.yml",
+    "docs/supply-chain.md",
+    "pyproject.toml",
+    "requirements-dev.txt",
+    "requirements.txt",
+    "tools/source_hygiene.py",
+    "tools/source_hygiene_fs.py",
+    "tools/source_hygiene_policy.json",
+    "tools/supply_chain.py",
+    "tools/supply_chain_contract.py",
+    "tools/supply_chain_graph.py",
+    "tools/supply_chain_manifest.py",
+    "tools/supply_chain_policy.json",
+    "tools/supply_chain_validation.py"
+  ],
+  "schema": "wavehelm-source-hygiene-policy-v1"
+}
