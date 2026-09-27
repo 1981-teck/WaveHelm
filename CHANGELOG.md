@@ -37,11 +37,12 @@
   A fresh RI02 Windows full-suite run is required before release approval.
 
 
-## [1.0.2] - Unreleased (release-integration RI03)
+## [1.0.2] - 2026-09-28
 
-RI02 retains the 08AX runtime while integrating public presentation/community
-files, the 1.0.2 package identity, and the qualification-harness reconciliation above. It does not authorize a release or claim a
-new Windows acceptance, dependency audit, or complete repository test pass.
+WaveHelm 1.0.2 retains the qualified 08AX runtime while integrating the public
+presentation/community files, the 1.0.2 package identity, and the release
+qualification harness. Historical RI01/RI02/RI03 evidence remains preserved
+separately from the final publication state.
 
 - Preserve the 08AX seek/source-ownership fix and the 08AW visual cursor handoff.
 - Preserve the accumulated WIC startup, rendering, focus, close/reopen and
@@ -54,8 +55,10 @@ new Windows acceptance, dependency audit, or complete repository test pass.
 - Align active package, About/runtime, localized manuals and supply-chain policy
   to 1.0.2 without changing runtime logic or dependency/lock versions.
 - Correct the 08AX/08AW changelog heading hierarchy; preserve historical evidence.
+- Finalize the public-release documentation and release-state version-consistency
+  assertions without changing application runtime logic, dependencies or lock contents.
 
-See `docs/release-integration.md` for pending gates and evidence limits.
+See `docs/release-integration.md` for preserved qualification history and evidence limits.
 
 ## R5I step08AX — seek state across video source changes
 - Retire drained seek observations from earlier transport epochs only after a

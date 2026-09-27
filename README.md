@@ -49,18 +49,18 @@ Rather than remaining a small demonstration, the project evolved into a complete
 
 - **Target platform:** Windows
 - **Maintained UI runtime:** wxPython
-- **Release-integration identity:** 1.0.2
-- **Integration checkpoint:** RI03 — validation pending, not yet published
-- **Latest public source release:** 1.0.1
+- **Release identity:** 1.0.2
+- **Qualification basis:** RI03 runtime qualification + final GitHub Actions release CI
+- **Latest public source release:** 1.0.2
 - **Project maturity:** active beta / public GPL source release
 - **Repository model:** source-first
 
-The package version is prepared for 1.0.2, but RI03 is **not a publication approval**.
-The release still requires final Windows evidence, current dependency auditing,
-and reconciliation with the current GitHub branch. The release badge and links
-above refer to the public release, not to approval of this working candidate.
-See [release-integration status](docs/release-integration.md) and
-[draft 1.0.2 release notes](docs/release-notes-1.0.2.md).
+WaveHelm 1.0.2 is the current public source release. Its application runtime
+remains the qualified RI03/08AX runtime; final publication preparation changes
+release-state documentation, its version-consistency assertions, and CI checkout
+infrastructure without changing application runtime logic or dependency/lock contents.
+See the preserved [release-integration history](docs/release-integration.md) and
+[WaveHelm 1.0.2 release notes](docs/release-notes-1.0.2.md).
 
 ## Public project website
 

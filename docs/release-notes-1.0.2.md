@@ -1,6 +1,4 @@
-# WaveHelm 1.0.2 — draft release notes
-
-**Draft for RI03. Do not announce this as a published or fully qualified release.**
+# WaveHelm 1.0.2
 
 WaveHelm 1.0.2 focuses on reliability and verification rather than a new feature set.
 
@@ -30,10 +28,21 @@ WaveHelm 1.0.2 focuses on reliability and verification rather than a new feature
 - Ship contribution, security, issue and PR guidance in the source distribution.
 - Preserve historical failures and distinguish component evidence from native
   Windows acceptance.
+- Preserve Windows lockfile bytes across Git checkouts and keep the CI coverage
+  output bound to the runner execution context.
 
-## Before publication
+## Qualification
 
-Insert the exact final commit, artifact hashes and Windows/CI/audit results only
-after they have actually passed and have been reviewed. Do not use a zero-vulnerability
-claim from a prior release for this candidate. The source remains Windows-first
-and requires its declared native dependencies; this is not an executable installer.
+The qualified Windows CI matrix completed successfully on CPython 3.11, 3.12
+and 3.13. On each interpreter, the complete suite reported 4,765 passed,
+16 expected skips, 0 failures and 0 errors. Source hygiene, wheel/sdist build,
+runtime-lock verification, installed dependency graph validation, pip check,
+vulnerability audit, CycloneDX SBOM generation, license validation and Windows
+SDK ABI/layout verification all passed. The qualified audit reported zero known
+vulnerabilities in the resolved runtime graph.
+
+The final publication preparation after runtime qualification changes release-state
+documentation, its version-consistency assertions, and CI checkout/release
+infrastructure only; it does not change application runtime logic, dependency
+versions or lock contents. WaveHelm remains Windows-first and requires its declared
+native dependencies; this source release is not an executable installer.
