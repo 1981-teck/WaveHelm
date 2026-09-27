@@ -9,7 +9,6 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
   PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  COVERAGE_FILE: ${{ runner.temp }}/wavehelm.coverage
 
 permissions:
   contents: read
@@ -98,12 +97,16 @@ jobs:
           --output pre-test-source-hygiene.json
 
       - name: Run complete source test suite
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/wavehelm.coverage
         run: >-
           python -m coverage run --branch --source=src -m pytest -p no:cacheprovider -q tests
           --junitxml=${{ runner.temp }}/wavehelm-tests.junit.xml
 
       - name: Export coverage evidence
         if: always()
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/wavehelm.coverage
         run: >-
           python -m coverage json
           -o ${{ runner.temp }}/wavehelm-coverage.json
