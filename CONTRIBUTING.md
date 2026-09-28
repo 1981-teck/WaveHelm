@@ -39,10 +39,9 @@ WaveHelm targets Windows.
 
 Before submitting a code change, please verify it on a supported Windows environment whenever possible.
 
-The project currently uses Python 3.11+ and wxPython.
+The declared minimum source runtime is Python 3.11. The checked-in Windows dependency locks and CI matrix cover CPython 3.11, 3.12, and 3.13; Python 3.12 is the recommended development reference. wxPython is the maintained UI runtime.
 
-Start by cloning the repository and following the setup instructions in the main README.
-
+Start by cloning the repository and follow [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md), especially the **Run from source** and **Development, tests, and package builds** sections. Use the dependency lock that matches the selected Python version.
 ## Contribution principles
 
 Please keep contributions:
@@ -62,8 +61,9 @@ Avoid combining feature work, refactoring, dependency updates, and unrelated cle
 A useful bug report should include:
 
 - WaveHelm version or commit
+- installation type: Windows installer, from source, or other
 - Windows version
-- Python version
+- Python version, when running from source
 - clear reproduction steps
 - expected behavior
 - actual behavior
