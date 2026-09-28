@@ -101,6 +101,10 @@ def test_ffprobe_duration_boundary_is_typed_and_bounded(tmp_path, monkeypatch):
     assert command[0] == "/fake/ffprobe"
     assert command[1:3] == ("-v", "error")
     assert kwargs["stdin"] == subprocess.DEVNULL
+    if ffprobe_service.os.name == "nt":
+        assert kwargs["creationflags"] == subprocess.CREATE_NO_WINDOW
+    else:
+        assert kwargs["creationflags"] == 0
 
     malformed = FakeProcess(stdout=b"{broken")
     _install_fake_process(monkeypatch, malformed)

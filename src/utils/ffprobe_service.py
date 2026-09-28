@@ -158,7 +158,7 @@ def _run_ffprobe(arguments: Sequence[str], *, timeout_seconds: float) -> bytes:
             command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
     except (OSError, ValueError) as error:
         raise FfprobeExecutionError(f"unable to start ffprobe: {error}") from error
