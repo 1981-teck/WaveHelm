@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wavehelm"
-version = "1.0.2"
+version = "1.0.3"
 description = "Windows-targeted desktop media player with a wxPython UI, DSP audio, ambient playback, and a Media Foundation video pipeline."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -59,7 +59,7 @@ def test_all_external_actions_are_pinned_to_full_commit_sha() -> None:
 
 def test_policy_is_fail_closed_and_has_no_vulnerability_exceptions() -> None:
     raw = json.loads(POLICY.read_text(encoding="utf-8"))
-    assert raw["project"] == {"name": "wavehelm", "version": "1.0.2"}
+    assert raw["project"] == {"name": "wavehelm", "version": "1.0.3"}
     assert raw["tools"] == {
         "cyclonedx-bom": "7.3.1",
         "pip": "26.2.1",

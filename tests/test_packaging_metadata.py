@@ -55,7 +55,7 @@ def test_pyproject_matches_product_identity():
     assert project["name"] == "wavehelm"
     assert project["version"] == general["version"]
     assert project["readme"] == "README.md"
-    assert project["version"] == "1.0.2"
+    assert project["version"] == "1.0.3"
     assert project["requires-python"] == ">=3.11"
     assert project["license"] == "GPL-3.0-or-later"
     assert project["license-files"] == ["LICENSE", "GPL_SECTION7_ADDITIONAL_TERMS.md"]

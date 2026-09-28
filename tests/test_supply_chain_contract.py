@@ -27,7 +27,7 @@ def test_repository_policy_and_runtime_requirements_are_strict() -> None:
     policy = load_policy(POLICY_PATH)
     requirements = parse_requirements(ROOT / "requirements.txt", policy.max_requirements)
     assert policy.project_name == "wavehelm"
-    assert policy.project_version == "1.0.2"
+    assert policy.project_version == "1.0.3"
     assert policy.pip_version == "26.2.1"
     assert policy.pip_audit_version == "2.10.1"
     assert policy.cyclonedx_bom_version == "7.3.1"
@@ -154,11 +154,11 @@ def test_project_identity_must_match_policy_and_runtime_metadata(tmp_path: Path)
     root = tmp_path / "repo"
     (root / "src" / "config").mkdir(parents=True)
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "wavehelm"\nversion = "1.0.2"\n',
+        '[project]\nname = "wavehelm"\nversion = "1.0.3"\n',
         encoding="utf-8",
     )
     app_info = root / "src" / "config" / "app_info.json"
-    app_info.write_text('{"general":{"version":"1.0.2"}}', encoding="utf-8")
+    app_info.write_text('{"general":{"version":"1.0.3"}}', encoding="utf-8")
     policy = load_policy(POLICY_PATH)
     validate_project_identity(root, policy)
     app_info.write_text('{"general":{"version":"1.0.1"}}', encoding="utf-8")

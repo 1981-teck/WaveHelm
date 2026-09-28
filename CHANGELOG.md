@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.3] - Unreleased
+
+- Suppress transient Windows console windows created by `ffprobe` metadata probes by using `CREATE_NO_WINDOW` on Windows only.
+- Preserve the existing subprocess capture, timeout, output-bound and typed-error behavior; non-Windows launches retain zero creation flags.
+- Add regression coverage for the Windows creation-flags contract.
+- Preserve dependency locks, Windows ABI declarations and the qualified 1.0.2 playback/runtime baseline.
+
+
 ## Release integration RI03 — Windows strict-decoding test portability reconciliation (2026-09-27)
 
 - Preserve the entire application runtime and dependency graph byte-for-byte from RI02.
