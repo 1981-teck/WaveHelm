@@ -15,8 +15,20 @@ body:
     id: version
     attributes:
       label: WaveHelm version or commit
-      description: Example: v1.0.1 or a Git commit hash.
-      placeholder: v1.0.1
+      description: "Example: v1.0.3 or a Git commit hash."
+      placeholder: v1.0.3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation type
+      description: How are you running WaveHelm?
+      options:
+        - Windows installer
+        - From source
+        - Other
     validations:
       required: true
 
@@ -24,7 +36,7 @@ body:
     id: windows
     attributes:
       label: Windows version
-      description: Example: Windows 11 24H2.
+      description: "Example: Windows 11 24H2."
       placeholder: Windows 11 24H2
     validations:
       required: true
