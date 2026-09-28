@@ -49,16 +49,18 @@ Rather than remaining a small demonstration, the project evolved into a complete
 
 - **Target platform:** Windows
 - **Maintained UI runtime:** wxPython
-- **Release candidate:** 1.0.3
-- **Qualification basis:** qualified 1.0.2 baseline + Windows ffprobe no-console fix + candidate CI
-- **Latest public source release:** 1.0.2
+- **Release identity:** 1.0.3
+- **Qualification basis:** Windows ffprobe no-console fix + complete 1.0.3 release qualification
+- **Latest public source release:** 1.0.3
 - **Project maturity:** active beta / public GPL source release
 - **Repository model:** source-first
-WaveHelm 1.0.3 is the current release candidate. It changes the Windows
-`ffprobe` subprocess launch policy to suppress transient console windows while
-preserving the qualified 1.0.2 playback/runtime baseline and dependency-lock
-contents. WaveHelm 1.0.2 remains the current public source release until
-`v1.0.3` is published. See the preserved
+WaveHelm 1.0.3 is the current public source release. It suppresses transient
+Windows console windows created by `ffprobe` metadata probes while preserving
+the qualified 1.0.2 playback/runtime baseline and dependency-lock contents.
+Release qualification included complete Windows CI, source hygiene,
+supply-chain/SBOM checks, Windows ABI/layout verification, frozen-GUI smoke
+testing, a real 1.0.2 -> 1.0.3 upgrade with exact installed-tree verification,
+and uninstall verification. See the preserved
 [release-integration history](docs/release-integration.md) and
 [WaveHelm 1.0.3 release notes](docs/release-notes-1.0.3.md).
 ## Public project website

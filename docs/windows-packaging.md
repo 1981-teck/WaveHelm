@@ -2,7 +2,7 @@
 
 ## Scope
 
-WaveHelm `1.0.3` is the **current release candidate**, derived from the qualified public `1.0.2` baseline plus the Windows `ffprobe` no-console correction. WaveHelm `1.0.2` remains the current public source release until `v1.0.3` is published. RI01/RI02/RI03 artifacts remain historical qualification evidence. See [release-integration history](release-integration.md).
+WaveHelm `1.0.3` is the **current public source release**, derived from the qualified public `1.0.2` baseline plus the Windows `ffprobe` no-console correction and completed 1.0.3 release qualification. WaveHelm `1.0.2` is the previous public source release. RI01/RI02/RI03 artifacts remain historical qualification evidence. See [release-integration history](release-integration.md).
 
 A source release must exclude generated test/runtime output while retaining every test source file required for continued development. Prebuilt installer recipes and signing automation remain outside this source baseline.
 

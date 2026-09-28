@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.3] - Unreleased
+## [1.0.3] - 2026-09-28
 
 - Suppress transient Windows console windows created by `ffprobe` metadata probes by using `CREATE_NO_WINDOW` on Windows only.
 - Preserve the existing subprocess capture, timeout, output-bound and typed-error behavior; non-Windows launches retain zero creation flags.
