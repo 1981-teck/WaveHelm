@@ -2,7 +2,9 @@
 
 ## Supported versions
 
-WaveHelm maintains one current security-supported line: the latest public release together with the current maintained source branch.
+Security corrections are applied to the current maintained security-supported line, beginning with WaveHelm 1.0.1.
+
+The current security-supported line consists of the latest public release together with the current maintained source branch.
 
 The authoritative public release is the version marked **Latest** on the GitHub Releases page:
 
