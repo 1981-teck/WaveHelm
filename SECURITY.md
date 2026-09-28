@@ -1,10 +1,16 @@
 # Security Policy
 
-## Supported source version
+## Supported versions
 
-Security corrections are applied to the current maintained source line, beginning with WaveHelm 1.0.1.
+WaveHelm maintains one current security-supported line: the latest public release together with the current maintained source branch.
 
-Earlier source archives should be upgraded before reporting a suspected issue whenever practical.
+The authoritative public release is the version marked **Latest** on the GitHub Releases page:
+
+https://github.com/1981-teck/WaveHelm/releases/latest
+
+Older releases are not actively maintained for security fixes. If you are using an older version, upgrade to the latest public release before reporting a suspected issue whenever practical.
+
+If a suspected vulnerability is observed only on an older release, include that version in the report together with whether the behavior can also be reproduced on the latest release or current maintained source.
 
 ## Reporting a vulnerability
 
@@ -19,7 +25,8 @@ This creates a private report visible to the reporter and repository maintainers
 A useful report should include, where possible:
 
 - affected WaveHelm version, commit, or archive hash;
-- Windows version and Python version;
+- installation type (Windows installer or source);
+- Windows version and Python version, when applicable;
 - affected file, component, or workflow;
 - clear reproduction steps or a minimal proof of concept;
 - observed and expected behavior;
@@ -32,17 +39,20 @@ If GitHub Private Vulnerability Reporting is temporarily unavailable, contact th
 
 ## Assessment scope
 
-Reports are evaluated against the maintained Windows source runtime.
+Reports are evaluated against the current maintained Windows runtime and source line.
 
 Environment-specific failures should identify relevant details such as:
 
 - Windows version;
-- Python version;
+- installation type;
+- Python version, when running from source;
 - Media Foundation availability;
 - codecs;
 - audio/video device;
 - dependency versions;
 - affected configuration.
+
+A behavior that occurs only on an unsupported older release may still be useful security information, but current-version reproducibility should be established whenever practical.
 
 ## Coordinated disclosure
 
