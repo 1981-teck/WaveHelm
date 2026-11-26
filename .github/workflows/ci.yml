@@ -4,6 +4,8 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '37 3 * * 1' # Monday 03:37 UTC; audit installed Windows dependencies
 
 env:
   PYTHONDONTWRITEBYTECODE: "1"
@@ -14,12 +16,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   source-hygiene:
     name: Source hygiene
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -49,6 +52,7 @@ jobs:
 
   test-and-build:
     name: Windows / Python ${{ matrix.python-version }}
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 40
     strategy:
@@ -297,6 +301,7 @@ jobs:
           retention-days: 30
   abi-layout:
     name: Windows SDK ABI/layout / Python 3.12
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
