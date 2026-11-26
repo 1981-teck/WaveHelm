@@ -9,7 +9,8 @@ from src.config import app_metadata
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RELEASE_VERSION = "1.0.3"
+CANDIDATE_VERSION = "1.0.4"
+CURRENT_PUBLIC_RELEASE_VERSION = "1.0.3"
 PREVIOUS_PUBLIC_RELEASE_VERSION = "1.0.2"
 SECURITY_SUPPORTED_SINCE_VERSION = "1.0.1"
 MANUAL_ROOT = ROOT / "src" / "resources" / "manual"
@@ -33,11 +34,11 @@ def _runtime_version() -> str:
 
 
 def test_active_version_sources_are_exactly_aligned() -> None:
-    assert VERSION_PATTERN.fullmatch(RELEASE_VERSION)
-    assert _project_version() == RELEASE_VERSION
-    assert _runtime_version() == RELEASE_VERSION
-    assert app_metadata.APP_VERSION_FALLBACK == RELEASE_VERSION
-    assert app_metadata.get_default_app_metadata()["general"]["version"] == RELEASE_VERSION
+    assert VERSION_PATTERN.fullmatch(CANDIDATE_VERSION)
+    assert _project_version() == CANDIDATE_VERSION
+    assert _runtime_version() == CANDIDATE_VERSION
+    assert app_metadata.APP_VERSION_FALLBACK == CANDIDATE_VERSION
+    assert app_metadata.get_default_app_metadata()["general"]["version"] == CANDIDATE_VERSION
 
 
 def test_embedded_manuals_use_the_release_identity() -> None:
@@ -45,7 +46,7 @@ def test_embedded_manuals_use_the_release_identity() -> None:
     assert len(manual_paths) == 4
     for manual_path in manual_paths:
         content = manual_path.read_text(encoding="utf-8")
-        assert RELEASE_VERSION in content
+        assert CANDIDATE_VERSION in content
         assert f"version {PREVIOUS_PUBLIC_RELEASE_VERSION}" not in content.lower()
 
 
@@ -56,11 +57,11 @@ def test_documents_identify_current_public_release() -> None:
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
 
-    assert f"Release identity:** {RELEASE_VERSION}" in readme
-    assert f"Latest public source release:** {RELEASE_VERSION}" in readme
-    assert f"WaveHelm `{RELEASE_VERSION}` is the **current public source release**" in packaging
-    assert f"## Current source release: {RELEASE_VERSION}" in roadmap
-    assert f"## [{RELEASE_VERSION}] - 2026-09-28" in changelog
+    assert f"Release identity:** {CURRENT_PUBLIC_RELEASE_VERSION}" in readme
+    assert f"Latest public source release:** {CURRENT_PUBLIC_RELEASE_VERSION}" in readme
+    assert f"WaveHelm `{CURRENT_PUBLIC_RELEASE_VERSION}` is the **current public source release**" in packaging
+    assert f"## Current source release: {CURRENT_PUBLIC_RELEASE_VERSION}" in roadmap
+    assert f"## [{CURRENT_PUBLIC_RELEASE_VERSION}] - 2026-09-28" in changelog
 
     current_release_docs = "\n".join((readme, packaging, roadmap))
     assert "current release candidate" not in current_release_docs.lower()
@@ -79,5 +80,5 @@ def test_active_metadata_surfaces_use_release_identity() -> None:
     ]
     for path in active_paths:
         content = path.read_text(encoding="utf-8")
-        assert RELEASE_VERSION in content
+        assert CANDIDATE_VERSION in content
         assert "1.0.2.dev23" not in content

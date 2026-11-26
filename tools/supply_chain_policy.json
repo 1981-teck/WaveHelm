@@ -9,7 +9,7 @@
   },
   "project": {
     "name": "wavehelm",
-    "version": "1.0.3"
+    "version": "1.0.4"
   },
   "require_https_downloads": true,
   "required_source_license_files": [
