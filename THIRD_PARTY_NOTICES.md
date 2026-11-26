@@ -14,8 +14,8 @@ archive the original upstream license / notice files from those exact artifacts.
 - numpy
 - scipy
 - soundfile
-- tinytag==2.2.1
-- Pillow
+- tinytag==2.3.2
+- Pillow==13.0.0
 - opencv-python
 - matplotlib
 - pywin32
@@ -35,7 +35,7 @@ archive the original upstream license / notice files from those exact artifacts.
 
 ### Permissive / low-friction cases
 
-- **tinytag** — current PyPI project metadata is MIT. This project now pins `tinytag==2.2.1` to stay on the permissive line.
+- **tinytag** — current PyPI project metadata is MIT. This project now pins `tinytag==2.3.2` to stay on the permissive line.
 - **comtypes** — MIT.
 - **Pillow** — MIT-CMU.
 - **matplotlib** — PSF-based license.
