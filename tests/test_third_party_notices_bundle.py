@@ -10,6 +10,7 @@ NOTICE_PATH = ROOT / "THIRD_PARTY_NOTICES.md"
 INDEX_PATH = ROOT / "src" / "resources" / "legal" / "NOTICE_INDEX.json"
 PROVENANCE_PATH = ROOT / "src" / "resources" / "legal" / "WHEEL_LICENSE_PROVENANCE.json"
 LICENSES_ROOT = ROOT / "src" / "resources" / "legal" / "licenses"
+WINDOWS_312_LOCK = ROOT / "locks" / "windows-py312-runtime" / "requirements.lock"
 REQUIREMENTS_PATH = ROOT / "requirements.txt"
 
 EXPECTED_PACKAGES = {
@@ -20,6 +21,8 @@ EXPECTED_PACKAGES = {
     "soundfile",
     "tinytag",
     "Pillow",
+    "python-dateutil",
+    "tzdata",
     "opencv-python",
     "matplotlib",
     "pywin32",
@@ -67,7 +70,12 @@ def test_selected_wheel_licenses_are_bundled_with_exact_contents():
     provenance = json.loads(PROVENANCE_PATH.read_text(encoding="utf-8"))
     index = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
     assert provenance["schema"] == "wavehelm-wheel-license-provenance-v1"
-    assert {record["package"] for record in provenance["records"]} == {"Pillow", "tinytag"}
+    assert len(provenance["records"]) == 6
+    assert {record["package"] for record in provenance["records"]} == {
+        "Pillow", "tinytag", "python-dateutil", "tzdata"
+    }
+    lock = WINDOWS_312_LOCK.read_text(encoding="utf-8")
+    indexed: dict[str, set[str]] = {}
 
     for record in provenance["records"]:
         relative = Path(record["bundled_license_path"])
@@ -76,4 +84,8 @@ def test_selected_wheel_licenses_are_bundled_with_exact_contents():
         payload = ROOT / "src" / "resources" / "legal" / relative
         assert payload.is_file()
         assert hashlib.sha256(payload.read_bytes()).hexdigest() == record["bundled_license_sha256"]
-        assert index["packages"][record["package"]]["wheel_license_texts"] == [relative.name]
+        indexed.setdefault(record["package"], set()).add(relative.name)
+        pinned = f'{record["package"].lower()}=={record["version"]} --hash=sha256:{record["wheel_sha256"]}'
+        assert pinned in lock
+    for package, names in indexed.items():
+        assert set(index["packages"][package]["wheel_license_texts"]) == names

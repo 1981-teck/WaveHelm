@@ -27,6 +27,10 @@
     "src/resources/legal/licenses/Pillow-13.0.0-WHEEL-LICENSE.txt",
     "src/resources/legal/licenses/PSF-2.0.txt",
     "src/resources/legal/licenses/TinyTag-2.3.2-LICENSE.txt",
+    "src/resources/legal/licenses/python-dateutil-4.0.0-AUTHORS.md",
+    "src/resources/legal/licenses/python-dateutil-4.0.0-LICENSE.txt",
+    "src/resources/legal/licenses/tzdata-2026.6-LICENSE.txt",
+    "src/resources/legal/licenses/tzdata-2026.6-LICENSE_APACHE.txt",
     "src/resources/legal/licenses/wxWindows-Library-Licence-3.1.txt"
   ],
   "sbom_spec_version": "1.6",

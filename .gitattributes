@@ -1,3 +1,7 @@
 locks/**/requirements.lock text eol=lf
 src/resources/legal/licenses/Pillow-13.0.0-WHEEL-LICENSE.txt -text
 src/resources/legal/licenses/TinyTag-2.3.2-LICENSE.txt -text
+src/resources/legal/licenses/python-dateutil-4.0.0-AUTHORS.md -text
+src/resources/legal/licenses/python-dateutil-4.0.0-LICENSE.txt -text
+src/resources/legal/licenses/tzdata-2026.6-LICENSE.txt -text
+src/resources/legal/licenses/tzdata-2026.6-LICENSE_APACHE.txt -text

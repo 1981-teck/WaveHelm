@@ -22,18 +22,9 @@ RESOURCE_EXCEPTIONS = (
 _NOTICE_FILES = (
     "THIRD_PARTY_NOTICES.md",
     "NOTICE_INDEX.json",
+    "WHEEL_LICENSE_PROVENANCE.json",
     "README.md",
     "GPL_SECTION7_ADDITIONAL_TERMS.md",
-)
-
-_LICENSE_TEXT_FILES = (
-    "Apache-2.0.txt",
-    "BSD-3-Clause.txt",
-    "LGPL-2.1.txt",
-    "MIT.txt",
-    "MIT-CMU.txt",
-    "PSF-2.0.txt",
-    "wxWindows-Library-Licence-3.1.txt",
 )
 
 _SOURCE_OFFER_TEMPLATE = """WaveHelm LGPL source-offer checklist
@@ -92,6 +83,32 @@ def _copy_resource_group(
         _write_if_changed(destination_dir / filename, payload)
 
 
+def _copy_license_tree(destination_dir: Path) -> None:
+    """Expose every bundled wheel notice, preserving its relative path."""
+    try:
+        root = resources.files("src.resources.legal.licenses")
+    except RESOURCE_EXCEPTIONS:
+        logger.debug("Unable to open bundled legal resources.", exc_info=True)
+        return
+
+    def copy_directory(directory, destination: Path) -> None:
+        try:
+            children = directory.iterdir()
+            for child in children:
+                name = child.name
+                if name in {"", ".", ".."} or "/" in name or "\\" in name:
+                    continue
+                target = destination / name
+                if child.is_dir():
+                    copy_directory(child, target)
+                elif child.is_file():
+                    _write_if_changed(target, child.read_bytes())
+        except RESOURCE_EXCEPTIONS:
+            logger.debug("Unable to copy legal resources from %s.", directory, exc_info=True)
+
+    copy_directory(root, destination_dir)
+
+
 def ensure_third_party_notices_dir(base_dir: Path | None = None) -> Path:
     destination_dir = get_third_party_notices_dir(base_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
@@ -100,11 +117,7 @@ def ensure_third_party_notices_dir(base_dir: Path | None = None) -> Path:
         package="src.resources.legal",
         filenames=_NOTICE_FILES,
     )
-    _copy_resource_group(
-        destination_dir,
-        package="src.resources.legal.licenses",
-        filenames=_LICENSE_TEXT_FILES,
-    )
+    _copy_license_tree(destination_dir)
     _write_if_changed(
         destination_dir / "LGPL_SOURCE_CODE_OFFER_TEMPLATE.txt",
         _SOURCE_OFFER_TEMPLATE.encode("utf-8"),
