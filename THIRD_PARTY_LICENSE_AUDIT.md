@@ -7,8 +7,8 @@
 - numpy — permissive mixed SPDX set on current metadata
 - scipy — BSD-family
 - soundfile + libsndfile — BSD wrapper + LGPL dependency
-- tinytag==2.2.1 — MIT
-- Pillow — MIT-CMU
+- tinytag==2.3.2 — MIT
+- Pillow==13.0.0 — MIT-CMU
 - opencv-python — Apache-2.0 with bundled notices
 - matplotlib — PSF-based
 - pywin32 — PSF
