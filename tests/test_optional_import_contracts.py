@@ -140,7 +140,7 @@ def test_corrupt_image_is_not_reported_as_success(payload: bytes) -> None:
 
 def test_declared_optional_stack_keeps_exact_existing_pins() -> None:
     requirements = (ROOT / 'requirements.txt').read_text(encoding='utf-8').splitlines()
-    assert 'Pillow==12.3.0' in requirements
+    assert 'Pillow==13.0.0' in requirements
     assert 'pywin32==311; platform_system == "Windows"' in requirements
 
 
