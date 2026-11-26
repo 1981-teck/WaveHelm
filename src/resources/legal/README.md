@@ -7,8 +7,12 @@ What is included here:
 - a project-level GPL section 7 additional terms notice
 - a `THIRD_PARTY_NOTICES.md` summary for the project
 - a machine-readable `NOTICE_INDEX.json`
+- `WHEEL_LICENSE_PROVENANCE.json` with hashes for the selected Pillow 13.0.0
+  Windows CPython 3.12 and TinyTag 2.3.2 wheel license payloads
 - baseline license texts for the main license families currently used by the
   declared runtime stack
+- the exact license files from those two selected wheels, including their
+  package-specific copyright and bundled third-party notices
 
 Important limitation:
 This is not a substitute for capturing the original upstream license files from

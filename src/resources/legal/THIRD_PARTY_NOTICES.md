@@ -35,9 +35,9 @@ archive the original upstream license / notice files from those exact artifacts.
 
 ### Permissive / low-friction cases
 
-- **tinytag** — current PyPI project metadata is MIT. This project now pins `tinytag==2.3.2` to stay on the permissive line.
+- **tinytag** — current PyPI project metadata is MIT. This project now pins `tinytag==2.3.2` to stay on the permissive line. The selected wheel's exact MIT license and copyright notice are included as `licenses/TinyTag-2.3.2-LICENSE.txt`.
 - **comtypes** — MIT.
-- **Pillow** — MIT-CMU.
+- **Pillow** — MIT-CMU. The selected Windows CPython 3.12 wheel's exact LICENSE, including bundled third-party notices, is included as `licenses/Pillow-13.0.0-WHEEL-LICENSE.txt`.
 - **matplotlib** — PSF-based license.
 - **pywin32** — PSF.
 - **scipy** — BSD-family license, plus bundled notices for exact wheels.
@@ -46,13 +46,16 @@ archive the original upstream license / notice files from those exact artifacts.
 ## Files included in this baseline bundle
 
 - `src/resources/legal/NOTICE_INDEX.json`
+- `src/resources/legal/WHEEL_LICENSE_PROVENANCE.json`
 - `src/resources/legal/README.md`
 - `src/resources/legal/licenses/Apache-2.0.txt`
 - `src/resources/legal/licenses/BSD-3-Clause.txt`
 - `src/resources/legal/licenses/LGPL-2.1.txt`
 - `src/resources/legal/licenses/MIT.txt`
 - `src/resources/legal/licenses/MIT-CMU.txt`
+- `src/resources/legal/licenses/Pillow-13.0.0-WHEEL-LICENSE.txt`
 - `src/resources/legal/licenses/PSF-2.0.txt`
+- `src/resources/legal/licenses/TinyTag-2.3.2-LICENSE.txt`
 - `src/resources/legal/licenses/wxWindows-Library-Licence-3.1.txt`
 
 ## Final Store-build checklist

@@ -1,1 +1,3 @@
 locks/**/requirements.lock text eol=lf
+src/resources/legal/licenses/Pillow-13.0.0-WHEEL-LICENSE.txt -text
+src/resources/legal/licenses/TinyTag-2.3.2-LICENSE.txt -text

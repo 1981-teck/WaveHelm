@@ -1,0 +1,24 @@
+{
+  "schema": "wavehelm-wheel-license-provenance-v1",
+  "scope": "Windows x64 / CPython 3.12 release candidate",
+  "records": [
+    {
+      "package": "Pillow",
+      "version": "13.0.0",
+      "wheel": "pillow-13.0.0-cp312-cp312-win_amd64.whl",
+      "wheel_sha256": "ff3fe9eb621fbb9db4c4be33ab946f6bac5f98ab50ca8d3260503653656c961b",
+      "wheel_license_path": "pillow-13.0.0.dist-info/licenses/LICENSE",
+      "bundled_license_path": "licenses/Pillow-13.0.0-WHEEL-LICENSE.txt",
+      "bundled_license_sha256": "988ffe8ab3480b0f4e9a0ab2702bffd73d9fb6b47198043fb3ba101a62fac236"
+    },
+    {
+      "package": "tinytag",
+      "version": "2.3.2",
+      "wheel": "tinytag-2.3.2-py3-none-any.whl",
+      "wheel_sha256": "ebaf957915266b9c20414a10f8c5170a345aa039a794650d39d66e7d6b96199f",
+      "wheel_license_path": "tinytag-2.3.2.dist-info/licenses/LICENSE",
+      "bundled_license_path": "licenses/TinyTag-2.3.2-LICENSE.txt",
+      "bundled_license_sha256": "497f61aac3d877f48539dfc38d3c35215ba53648d0f9c4ac7fec467a0dc0cb4d"
+    }
+  ]
+}

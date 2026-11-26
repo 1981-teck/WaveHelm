@@ -51,8 +51,12 @@
       "baseline_license_texts": [
         "MIT.txt"
       ],
+      "wheel_license_texts": [
+        "TinyTag-2.3.2-LICENSE.txt"
+      ],
       "notes": [
-        "Requirements pin tinytag==2.3.2 to a specific MIT-licensed release and avoid the older GPL-tagged 0.x line on PyPI."
+        "Requirements pin tinytag==2.3.2 to a specific MIT-licensed release and avoid the older GPL-tagged 0.x line on PyPI.",
+        "The exact LICENSE from the selected tinytag 2.3.2 wheel is bundled; see WHEEL_LICENSE_PROVENANCE.json."
       ]
     },
     "Pillow": {
@@ -60,7 +64,12 @@
       "baseline_license_texts": [
         "MIT-CMU.txt"
       ],
-      "notes": []
+      "wheel_license_texts": [
+        "Pillow-13.0.0-WHEEL-LICENSE.txt"
+      ],
+      "notes": [
+        "The exact LICENSE from the selected Pillow 13.0.0 Windows CPython 3.12 wheel, including its bundled third-party notices, is bundled; see WHEEL_LICENSE_PROVENANCE.json."
+      ]
     },
     "opencv-python": {
       "license_family": "Apache-2.0 + bundled LGPL-compatible notices",

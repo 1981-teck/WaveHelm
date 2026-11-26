@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 NOTICE_PATH = ROOT / "THIRD_PARTY_NOTICES.md"
 INDEX_PATH = ROOT / "src" / "resources" / "legal" / "NOTICE_INDEX.json"
+PROVENANCE_PATH = ROOT / "src" / "resources" / "legal" / "WHEEL_LICENSE_PROVENANCE.json"
 LICENSES_ROOT = ROOT / "src" / "resources" / "legal" / "licenses"
 REQUIREMENTS_PATH = ROOT / "requirements.txt"
 
@@ -59,3 +61,19 @@ def test_requirements_pin_tinytag_to_current_permissive_line():
     requirements = REQUIREMENTS_PATH.read_text(encoding="utf-8")
     assert "tinytag==2.3.2" in requirements
     assert "wxPython" in requirements
+
+
+def test_selected_wheel_licenses_are_bundled_with_exact_contents():
+    provenance = json.loads(PROVENANCE_PATH.read_text(encoding="utf-8"))
+    index = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+    assert provenance["schema"] == "wavehelm-wheel-license-provenance-v1"
+    assert {record["package"] for record in provenance["records"]} == {"Pillow", "tinytag"}
+
+    for record in provenance["records"]:
+        relative = Path(record["bundled_license_path"])
+        assert relative.parts[0] == "licenses"
+        assert len(relative.parts) == 2
+        payload = ROOT / "src" / "resources" / "legal" / relative
+        assert payload.is_file()
+        assert hashlib.sha256(payload.read_bytes()).hexdigest() == record["bundled_license_sha256"]
+        assert index["packages"][record["package"]]["wheel_license_texts"] == [relative.name]
