@@ -10,8 +10,8 @@ from src.config import app_metadata
 
 ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE_VERSION = "1.0.4"
-CURRENT_PUBLIC_RELEASE_VERSION = "1.0.3"
-PREVIOUS_PUBLIC_RELEASE_VERSION = "1.0.2"
+CURRENT_PUBLIC_RELEASE_VERSION = "1.0.4"
+PREVIOUS_PUBLIC_RELEASE_VERSION = "1.0.3"
 SECURITY_SUPPORTED_SINCE_VERSION = "1.0.1"
 MANUAL_ROOT = ROOT / "src" / "resources" / "manual"
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
@@ -61,7 +61,7 @@ def test_documents_identify_current_public_release() -> None:
     assert f"Latest public source release:** {CURRENT_PUBLIC_RELEASE_VERSION}" in readme
     assert f"WaveHelm `{CURRENT_PUBLIC_RELEASE_VERSION}` is the **current public source release**" in packaging
     assert f"## Current source release: {CURRENT_PUBLIC_RELEASE_VERSION}" in roadmap
-    assert f"## [{CURRENT_PUBLIC_RELEASE_VERSION}] - 2026-09-28" in changelog
+    assert f"## [{CURRENT_PUBLIC_RELEASE_VERSION}] - 2026-11-26" in changelog
 
     current_release_docs = "\n".join((readme, packaging, roadmap))
     assert "current release candidate" not in current_release_docs.lower()

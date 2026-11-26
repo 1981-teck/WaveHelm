@@ -14,24 +14,24 @@ and providing a convenience installer are complementary, not competing routes.
 
 ### Download and requirements
 
-The public `1.0.3` release provides
-[`WaveHelmSetup_1.0.3_win64.exe`](https://github.com/1981-teck/WaveHelm/releases/download/v1.0.3/WaveHelmSetup_1.0.3_win64.exe).
+The public `1.0.4` release provides
+[`WaveHelmSetup_1.0.4_win64.exe`](https://github.com/1981-teck/WaveHelm/releases/download/v1.0.4/WaveHelmSetup_1.0.4_win64.exe).
 Use Windows 10 or Windows 11 x64 with Windows COM and Media Foundation available.
 Video decoding depends on the codecs supported by the local Windows installation.
 The installer route does not require the source checkout, pip, or a virtual environment.
 
-Open the [v1.0.3 release page](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.3)
+Open the [v1.0.4 release page](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.4)
 and select the `.exe` under **Assets**. The `.whl`, `.tar.gz`, and automatic
 **Source code** downloads are developer/source artifacts, not the installer.
 
 ### Check the download
 
-Download `WaveHelm-1.0.3-SHA256SUMS.txt` from the same release. In the directory
+Download `WaveHelm-1.0.4-SHA256SUMS.txt` from the same release. In the directory
 containing the downloaded installer, use PowerShell:
 
 ```powershell
 $ErrorActionPreference = 'Stop'
-Get-FileHash -LiteralPath '.\WaveHelmSetup_1.0.3_win64.exe' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\WaveHelmSetup_1.0.4_win64.exe' -Algorithm SHA256
 ```
 
 Compare the complete hash with the entry for that exact filename. Stop if it
@@ -43,7 +43,7 @@ checks. Do not disable Windows security protections to complete an installation.
 
 1. Close any running instance of WaveHelm.
 2. Run the downloaded installer and follow its prompts.
-3. Launch WaveHelm and check that **About** reports `1.0.3`.
+3. Launch WaveHelm and check that **About** reports `1.0.4`.
 4. Import a local file in **Library** and try playback, pause, seek, and stop.
    The [README quick start](README.md#quick-start) covers the other pages.
 
@@ -57,10 +57,11 @@ installer for the existing installation rather than mixing installed application
 files with a source checkout. Confirm the version in **About** after the upgrade
 and check your library, settings, playlists, and favorites.
 
-The [1.0.3 release notes](docs/release-notes-1.0.3.md) report a real
-`1.0.2 -> 1.0.3` in-place upgrade and exact installed-tree verification.
-That evidence covers the stated transition; it is not a guarantee for every older
-version, custom install location, or rollback scenario.
+The [1.0.4 release notes](docs/release-notes-1.0.4.md) and its versioned release
+page state which upgrade path was actually checked. Those results do not cover
+every older version, custom install location, or rollback scenario. The
+[1.0.3 release notes](docs/release-notes-1.0.3.md) retain the earlier
+`1.0.2 -> 1.0.3` qualification record.
 
 ### Uninstall
 
@@ -68,9 +69,10 @@ Close WaveHelm, then select WaveHelm's uninstall action in Windows app settings
 and follow the uninstaller. Keep your application-data backup until you have
 confirmed which data you intend to retain.
 
-The recorded 1.0.3 uninstall check covers the registry identity, installation tree,
-and shortcuts. It is not a blanket promise about personal-data retention under
-every installer option. Do not delete your media folders as an uninstall step.
+The versioned release notes state the scope of the current uninstall check.
+The recorded 1.0.3 check covers its registry identity, installation tree, and
+shortcuts; it is not a blanket promise about personal-data retention under every
+installer option. Do not delete your media folders as an uninstall step.
 
 ## Run from source
 
@@ -84,7 +86,7 @@ macOS and Linux are not supported product targets.
 
 Get a clean source checkout or source archive first and open PowerShell in its root
 (the directory containing `main.py`, `requirements.txt`, and `locks/`). Use the
-`v1.0.3` source for the published release; `main` may contain later development.
+`v1.0.4` source for the published release; `main` may contain later development.
 Do not copy an old source tree over a new one.
 
 ### Create an isolated, hash-locked runtime

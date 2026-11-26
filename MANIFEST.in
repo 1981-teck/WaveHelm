@@ -28,6 +28,7 @@ prune tests/_tmp_locales
 prune build
 prune dist
 recursive-include tools *.py *.json *.ps1 *.cpp
+recursive-include packaging/windows *.ps1 *.spec *.template *.txt *.ico *.md
 include docs/supply-chain.md
 recursive-include locks *.lock *.json
 

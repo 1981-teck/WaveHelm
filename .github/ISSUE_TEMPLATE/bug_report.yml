@@ -15,8 +15,8 @@ body:
     id: version
     attributes:
       label: WaveHelm version or commit
-      description: "Example: v1.0.3 or a Git commit hash."
-      placeholder: v1.0.3
+      description: "Example: v1.0.4 or a Git commit hash."
+      placeholder: v1.0.4
     validations:
       required: true
 
