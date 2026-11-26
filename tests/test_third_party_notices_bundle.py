@@ -31,7 +31,7 @@ def test_third_party_notices_bundle_exists_and_covers_runtime_stack():
 
     text = NOTICE_PATH.read_text(encoding="utf-8")
     assert "baseline third-party notices bundle" in text
-    assert "tinytag==2.2.1" in text
+    assert "tinytag==2.3.2" in text
     assert "Microsoft Store" in text
     assert "wxPython" in text
 
@@ -57,5 +57,5 @@ def test_baseline_license_text_files_exist():
 
 def test_requirements_pin_tinytag_to_current_permissive_line():
     requirements = REQUIREMENTS_PATH.read_text(encoding="utf-8")
-    assert "tinytag==2.2.1" in requirements
+    assert "tinytag==2.3.2" in requirements
     assert "wxPython" in requirements
