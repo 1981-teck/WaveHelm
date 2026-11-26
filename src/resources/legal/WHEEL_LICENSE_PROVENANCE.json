@@ -1,0 +1,60 @@
+{
+  "schema": "wavehelm-wheel-license-provenance-v1",
+  "scope": "Windows x64 / CPython 3.12 release candidate",
+  "records": [
+    {
+      "package": "Pillow",
+      "version": "13.0.0",
+      "wheel": "pillow-13.0.0-cp312-cp312-win_amd64.whl",
+      "wheel_sha256": "ff3fe9eb621fbb9db4c4be33ab946f6bac5f98ab50ca8d3260503653656c961b",
+      "wheel_license_path": "pillow-13.0.0.dist-info/licenses/LICENSE",
+      "bundled_license_path": "licenses/Pillow-13.0.0-WHEEL-LICENSE.txt",
+      "bundled_license_sha256": "988ffe8ab3480b0f4e9a0ab2702bffd73d9fb6b47198043fb3ba101a62fac236"
+    },
+    {
+      "package": "tinytag",
+      "version": "2.3.2",
+      "wheel": "tinytag-2.3.2-py3-none-any.whl",
+      "wheel_sha256": "ebaf957915266b9c20414a10f8c5170a345aa039a794650d39d66e7d6b96199f",
+      "wheel_license_path": "tinytag-2.3.2.dist-info/licenses/LICENSE",
+      "bundled_license_path": "licenses/TinyTag-2.3.2-LICENSE.txt",
+      "bundled_license_sha256": "497f61aac3d877f48539dfc38d3c35215ba53648d0f9c4ac7fec467a0dc0cb4d"
+    },
+    {
+      "package": "python-dateutil",
+      "version": "4.0.0",
+      "wheel": "python_dateutil-4.0.0-py3-none-any.whl",
+      "wheel_sha256": "a5e246f79eb80475e691bf93862cead98decd8a498cf53ba0516fcdc0f50dc1c",
+      "wheel_license_path": "python_dateutil-4.0.0.dist-info/licenses/AUTHORS.md",
+      "bundled_license_path": "licenses/python-dateutil-4.0.0-AUTHORS.md",
+      "bundled_license_sha256": "56004c45a95e9ee5582ea60f9a7ee42179c8594c7b9c245bbfb4a3445b4af640"
+    },
+    {
+      "package": "python-dateutil",
+      "version": "4.0.0",
+      "wheel": "python_dateutil-4.0.0-py3-none-any.whl",
+      "wheel_sha256": "a5e246f79eb80475e691bf93862cead98decd8a498cf53ba0516fcdc0f50dc1c",
+      "wheel_license_path": "python_dateutil-4.0.0.dist-info/licenses/LICENSE",
+      "bundled_license_path": "licenses/python-dateutil-4.0.0-LICENSE.txt",
+      "bundled_license_sha256": "ba00f51a0d92823b5a1cde27d8b5b9d2321e67ed8da9bc163eff96d5e17e577e"
+    },
+    {
+      "package": "tzdata",
+      "version": "2026.6",
+      "wheel": "tzdata-2026.6-py2.py3-none-any.whl",
+      "wheel_sha256": "0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec",
+      "wheel_license_path": "tzdata-2026.6.dist-info/licenses/LICENSE",
+      "bundled_license_path": "licenses/tzdata-2026.6-LICENSE.txt",
+      "bundled_license_sha256": "df58f69ea88683035d720b5375bcef0cf5aeaa98a1d098d572e0992c378deb46"
+    },
+    {
+      "package": "tzdata",
+      "version": "2026.6",
+      "wheel": "tzdata-2026.6-py2.py3-none-any.whl",
+      "wheel_sha256": "0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec",
+      "wheel_license_path": "tzdata-2026.6.dist-info/licenses/licenses/LICENSE_APACHE",
+      "bundled_license_path": "licenses/tzdata-2026.6-LICENSE_APACHE.txt",
+      "bundled_license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    }
+  ]
+}

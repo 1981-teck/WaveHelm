@@ -1,0 +1,70 @@
+#define MyAppName "WaveHelm"
+#define MyAppVersion "1.0.4"
+#define MyAppPublisher "Pastoris Marco Vincenzo"
+#define MyAppURL "https://1981-teck.github.io/WaveHelm/"
+#define MyAppExeName "WaveHelm.exe"
+
+[Setup]
+AppId={{8E7C1A0E-8E8E-4D8F-9E3F-6D7A5A9D2C41}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppVerName=WaveHelm version 1.0.4
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL=https://1981-teck.github.io/WaveHelm/support.html
+AppUpdatesURL=https://github.com/1981-teck/WaveHelm/releases/latest
+DefaultDirName={autopf}\WaveHelm
+DefaultGroupName=WaveHelm
+DisableDirPage=yes
+DisableProgramGroupPage=yes
+UsePreviousAppDir=yes
+UsePreviousGroup=yes
+UsePreviousTasks=yes
+AllowNoIcons=yes
+PrivilegesRequired=admin
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+UninstallDisplayIcon={app}\{#MyAppExeName}
+OutputDir=@@OUTPUT_DIR@@
+OutputBaseFilename=WaveHelmSetup_1.0.4_win64
+SetupIconFile=@@ICON_FILE@@
+LicenseFile=@@LICENSE_FILE@@
+Compression=lzma2/ultra64
+SolidCompression=yes
+WizardStyle=modern
+CloseApplications=yes
+CloseApplicationsFilter=WaveHelm.exe
+RestartApplications=no
+SetupLogging=yes
+VersionInfoVersion=1.0.4.0
+VersionInfoCompany=Pastoris Marco Vincenzo
+VersionInfoDescription=WaveHelm 1.0.4 Setup
+VersionInfoProductName=WaveHelm
+VersionInfoProductVersion=1.0.4
+VersionInfoCopyright=Copyright (c) 2026 Pastoris Marco Vincenzo
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "italian"; MessagesFile: "compiler:Languages\Italian.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal"
+Type: files; Name: "{app}\AUTHORS"
+Type: files; Name: "{app}\GPL_SECTION7_ADDITIONAL_TERMS.md"
+Type: files; Name: "{app}\LICENSE"
+Type: files; Name: "{app}\README.md"
+Type: files; Name: "{app}\THIRD_PARTY_LICENSE_AUDIT.md"
+Type: files; Name: "{app}\THIRD_PARTY_NOTICES.md"
+
+[Files]
+Source: "@@FROZEN_ROOT@@\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{autoprograms}\WaveHelm"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{autodesktop}\WaveHelm"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,WaveHelm}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent

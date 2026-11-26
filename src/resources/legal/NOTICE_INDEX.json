@@ -51,8 +51,12 @@
       "baseline_license_texts": [
         "MIT.txt"
       ],
+      "wheel_license_texts": [
+        "TinyTag-2.3.2-LICENSE.txt"
+      ],
       "notes": [
-        "Requirements pin tinytag==2.2.1 to a specific MIT-licensed release and avoid the older GPL-tagged 0.x line on PyPI."
+        "Requirements pin tinytag==2.3.2 to a specific MIT-licensed release and avoid the older GPL-tagged 0.x line on PyPI.",
+        "The exact LICENSE from the selected tinytag 2.3.2 wheel is bundled; see WHEEL_LICENSE_PROVENANCE.json."
       ]
     },
     "Pillow": {
@@ -60,7 +64,39 @@
       "baseline_license_texts": [
         "MIT-CMU.txt"
       ],
-      "notes": []
+      "wheel_license_texts": [
+        "Pillow-13.0.0-WHEEL-LICENSE.txt"
+      ],
+      "notes": [
+        "The exact LICENSE from the selected Pillow 13.0.0 Windows CPython 3.12 wheel, including its bundled third-party notices, is bundled; see WHEEL_LICENSE_PROVENANCE.json."
+      ]
+    },
+    "python-dateutil": {
+      "license_family": "BSD-3-Clause and Apache-2.0 notices in the selected wheel",
+      "baseline_license_texts": [
+        "BSD-3-Clause.txt",
+        "Apache-2.0.txt"
+      ],
+      "wheel_license_texts": [
+        "python-dateutil-4.0.0-AUTHORS.md",
+        "python-dateutil-4.0.0-LICENSE.txt"
+      ],
+      "notes": [
+        "The selected python-dateutil 4.0.0 wheel's AUTHORS and LICENSE are bundled verbatim; see WHEEL_LICENSE_PROVENANCE.json."
+      ]
+    },
+    "tzdata": {
+      "license_family": "Apache-2.0",
+      "baseline_license_texts": [
+        "Apache-2.0.txt"
+      ],
+      "wheel_license_texts": [
+        "tzdata-2026.6-LICENSE.txt",
+        "tzdata-2026.6-LICENSE_APACHE.txt"
+      ],
+      "notes": [
+        "The selected tzdata 2026.6 wheel's package notice and full Apache license are bundled verbatim; see WHEEL_LICENSE_PROVENANCE.json."
+      ]
     },
     "opencv-python": {
       "license_family": "Apache-2.0 + bundled LGPL-compatible notices",

@@ -7,7 +7,7 @@
 [![Latest release](https://img.shields.io/github/v/release/1981-teck/WaveHelm?display_name=tag&sort=semver)](https://github.com/1981-teck/WaveHelm/releases/latest)
 ### Explore WaveHelm
 
-[**Download for Windows — v1.0.3**](https://github.com/1981-teck/WaveHelm/releases/download/v1.0.3/WaveHelmSetup_1.0.3_win64.exe) ·
+[**Download for Windows — v1.0.4**](https://github.com/1981-teck/WaveHelm/releases/download/v1.0.4/WaveHelmSetup_1.0.4_win64.exe) ·
 [**Watch the 55-second demo**](#demo) ·
 [**Installation guide**](INSTALL_WINDOWS.md)
 
@@ -15,7 +15,7 @@ Windows 10/11 · x64 installer · Active beta. The installer is the user downloa
 Python setup is only needed when running from source.
 
 [**Project website**](https://1981-teck.github.io/WaveHelm/) ·
-[**Release notes and all downloads**](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.3) ·
+[**Release notes and all downloads**](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.4) ·
 [**Run from source**](#install-and-run-from-source) ·
 [**Discussions**](https://github.com/1981-teck/WaveHelm/discussions) ·
 [**Roadmap**](ROADMAP.md)
@@ -48,23 +48,18 @@ Rather than remaining a small demonstration, the project evolved into a complete
 ## Project status
 - **Target platform:** Windows
 - **Maintained UI runtime:** wxPython
-- **Release identity:** 1.0.3
-- **Qualification basis:** Windows ffprobe no-console fix + complete 1.0.3 release qualification
-- **Latest public source release:** 1.0.3
-- **Windows distribution:** x64 installer available on the v1.0.3 release page
+- **Release identity:** 1.0.4
+- **Qualification basis:** Windows CI, dependency audit, and the bounded installer checks recorded on the versioned release page
+- **Latest public source release:** 1.0.4
+- **Windows distribution:** x64 installer available on the v1.0.4 release page
 - **Project maturity:** active beta / public GPL source release
 - **Repository model:** source-first
-WaveHelm 1.0.3 is the current public source release and also provides a Windows
-x64 installer. It suppresses transient Windows console windows created by
-`ffprobe` metadata probes while preserving the qualified 1.0.2 playback/runtime
-baseline and dependency-lock contents.
-
-The [published 1.0.3 release notes](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.3)
-report Windows CI, source hygiene, supply-chain/SBOM checks, Windows ABI/layout
-verification, frozen-GUI smoke testing, a real 1.0.2 -> 1.0.3 upgrade with exact
-installed-tree verification, and uninstall verification. These are the recorded
-release results, not a new qualification of every subsequent documentation edit.
-See also the [repository release notes](docs/release-notes-1.0.3.md).
+WaveHelm 1.0.4 updates Pillow and TinyTag to address published dependency
+advisories. It regenerates the Windows hash locks, expands bundled third-party
+license material, and provides a Windows x64 installer. The [1.0.4 release page](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.4)
+records the final artifact hashes and the scope of its Windows qualification.
+See also the [repository release notes](docs/release-notes-1.0.4.md). The
+[1.0.3 release notes](docs/release-notes-1.0.3.md) retain their historical scope.
 
 The [RI01/RI02/RI03 integration history](docs/release-integration.md) retains its
 original candidate states and failed or pending checks; it does not describe the
@@ -337,12 +332,12 @@ WaveHelm is not a pure-Python application. The current runtime expects:
 If you distribute a frozen build, treat the video branch as Windows-only and verify it on a real Windows machine with Media Foundation enabled.
 ## Download for Windows
 
-Use [WaveHelmSetup_1.0.3_win64.exe](https://github.com/1981-teck/WaveHelm/releases/download/v1.0.3/WaveHelmSetup_1.0.3_win64.exe)
+Use [WaveHelmSetup_1.0.4_win64.exe](https://github.com/1981-teck/WaveHelm/releases/download/v1.0.4/WaveHelmSetup_1.0.4_win64.exe)
 for Windows 10/11 x64. Close WaveHelm before installing or upgrading, then follow
 the installer. The [Windows installation guide](INSTALL_WINDOWS.md#install-the-windows-application)
 explains first launch, checksum comparison, upgrades, and uninstalling.
 
-The [release page](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.3)
+The [release page](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.4)
 also contains SHA-256 checksums, the SBOM, a wheel, and source archives.
 The wheel and source archives are **not** the Windows installer.
 
@@ -384,19 +379,21 @@ The repository includes:
 * the complete source test suite under [tests](tests)
 * GitHub Actions validation under [.github/workflows](.github/workflows)
 * [docs/windows-packaging.md](docs/windows-packaging.md) with Windows runtime, installer/source distinctions, and the installed-graph CI evidence process
-* a baseline legal notices bundle aligned to the maintained wx-only runtime stack
+* [packaging/windows](packaging/windows) with the project-specific source files for the frozen Windows executable and installer
+* bundled legal notices and tooling to generate the installed-runtime license inventory
 Distribution and build automation are separate:
 
 * **Available:** the Windows x64 installer, wheel, source archive, SBOM, and checksums
-  attached to the [v1.0.3 release](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.3).
+  attached to the [v1.0.4 release](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.4).
 * **Maintained in the repository:** source execution, tests, wheel/source builds,
-  dependency hash locks, and the existing CI verification jobs.
-* **Still tracked separately:** public frozen-build recipes, installer automation,
-  code-signing automation, and independently verified installer-to-tag reproducibility.
+  dependency hash locks, CI verification jobs, and the project-specific Windows
+  freeze and installer scripts. The complete operational build kit stays local.
+* **Still tracked separately:** installer automation, code-signing automation,
+  and independently verified bit-for-bit installer reproducibility.
 
-An available installer is not, by itself, proof that its complete build/signing
-process is reproducible from this repository. Published 1.0.3 assets and historical
-qualification records are not regenerated by documentation-only updates.
+The public build recipe provides the source inputs needed to repeat the build;
+it is not a claim of a bit-for-bit reproducible or signed installer. Published
+1.0.3 assets and historical qualification records remain unchanged.
 
 The repository now includes curated UI screenshots under [docs/screenshots](docs/screenshots) for GitHub presentation.
 ## Contributing and collaboration

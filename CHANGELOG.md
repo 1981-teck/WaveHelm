@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.4] - 2026-11-26
+
+- Update Pillow from 12.3.0 to 13.0.0 and TinyTag from 2.2.1 to 2.3.2 to address published dependency advisories.
+- Regenerate the hash-checked Windows runtime and development locks for Python 3.11, 3.12, and 3.13; verify the installed dependency graphs in CI.
+- Update the bundled third-party license material and add a real-WAV metadata integration test.
+- Publish the project-specific Windows build sources needed to create the frozen executable and installer, while keeping the operational build environment and private test evidence local.
+
 ## [1.0.3] - 2026-09-28
 
 - Suppress transient Windows console windows created by `ffprobe` metadata probes by using `CREATE_NO_WINDOW` on Windows only.

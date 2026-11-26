@@ -1,10 +1,10 @@
 # WaveHelm engineering roadmap
 
-This roadmap describes engineering work after the public `1.0.3` source release. It is not a promise of dates or release scope.
+This roadmap describes engineering work after the public `1.0.4` source release. It is not a promise of dates or release scope.
 
-## Current source release: 1.0.3
+## Current source release: 1.0.4
 
-WaveHelm `1.0.3` is the current public source release, with a [Windows x64 installer](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.3). It carries the public `1.0.2` baseline plus the Windows `ffprobe` no-console correction. The [release notes](docs/release-notes-1.0.3.md) record the maintainer's qualification results. Historical RI03 evidence retains its original scope and is not a statement that the current public release is still unpublished.
+WaveHelm `1.0.4` is the current public source release, with a [Windows x64 installer](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.4). It updates vulnerable media dependencies, regenerates the Windows locks, and adds the project-specific [Windows build sources](packaging/windows). The [release notes](docs/release-notes-1.0.4.md) describe the changes; the versioned GitHub release records final artifact hashes and qualification scope. Historical [1.0.3 qualification](docs/release-notes-1.0.3.md) and RI03 evidence retain their original scope.
 
 ## Read status and evidence separately
 
@@ -16,8 +16,8 @@ WaveHelm `1.0.3` is the current public source release, with a [Windows x64 insta
 | Maintenance cleanup | Application-owned path constraints, canonicalization, managed-cache markers, protected-location checks, and active-cache handling are present in [settings_controller_cleanup.py](src/controller/settings_controller_cleanup.py). | Extend negative Windows filesystem tests and verify permissions, reparse-point changes, partial deletion, and concurrent use without weakening those guards. |
 | Bounded ffprobe execution | [ffprobe_service.py](src/utils/ffprobe_service.py) already centralizes typed failures, timeout/output bounds, process cleanup, and the Windows no-console flag. | Verify consumers and their cancellation contracts; extend regression coverage rather than rebuild the service as a new feature. |
 | Windows video lifecycle | The [WIC application baseline](docs/wic-application-baseline.md) records owner-observed playback/resource behavior and earlier standalone evidence, with explicit limits. | Long-duration runs, resolution/frame-rate envelopes, seek/EOS/loop synchronization, fullscreen/HiDPI/multi-monitor behavior, and residual ownership checks. |
-| Source and release checks | The [CI workflow](.github/workflows/ci.yml) configures Windows Python 3.11/3.12/3.13 tests/builds, installed-runtime audit/SBOM, and ABI checks. The 1.0.3 notes report their release outcomes. | Explicit OS-version coverage, durable release evidence, and scheduled rescanning; workflow presence alone does not qualify a new change. |
-| Public presentation | README, Windows installation guide, packaging notes, and homepage distinguish the published installer from source development and deferred release engineering. | Review user feedback and accessibility; keep version-specific downloads, instructions, and this roadmap consistent at each release. |
+| Source and release checks | The [CI workflow](.github/workflows/ci.yml) configures Windows Python 3.11/3.12/3.13 tests/builds, installed-runtime audit/SBOM, and ABI checks. The 1.0.4 release page records the final run and its results. | Explicit OS-version coverage, durable release evidence, and scheduled rescanning; workflow presence alone does not qualify a new change. |
+| Public presentation | README, Windows installation guide, packaging notes, homepage, and the project-specific Windows build sources distinguish the published installer from source development. | Review user feedback and accessibility; keep version-specific downloads, instructions, and this roadmap consistent at each release. |
 
 ## Priority 0 — settings and maintenance safety
 

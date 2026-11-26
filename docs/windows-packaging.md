@@ -2,23 +2,23 @@
 
 ## Scope
 
-WaveHelm `1.0.3` is the **current public source release** and has a published Windows x64 installer. It derives from the public `1.0.2` baseline plus the Windows `ffprobe` no-console correction. The [1.0.3 release notes](release-notes-1.0.3.md) record the maintainer's qualification results; editing this document does not rerun or extend those results.
+WaveHelm `1.0.4` is the **current public source release** and has a published Windows x64 installer. It updates Pillow and TinyTag, regenerates the Windows dependency locks, expands bundled license material, and adds project-specific Windows build sources. The [1.0.4 release notes](release-notes-1.0.4.md) describe the changes; its [versioned release page](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.4) records the final artifact hashes and qualification scope. The [1.0.3 release notes](release-notes-1.0.3.md) retain their historical results.
 
 Keep three separate concerns explicit: installing the distributed application, building/testing the public sources, and reproducing/signing the frozen installer. Availability of a downloadable installer does not establish public installer-to-tag reproducibility or verify its signing status.
 
 RI01/RI02/RI03 documents and `SOURCE_MANIFEST_R5.json` retain their historical scope. Do not rewrite old reports, inventories, failures, or `NOT RUN` / `NOT VERIFIED` states to describe a newer release. See [release-integration history](release-integration.md).
 
-## Published 1.0.3 assets
+## Published 1.0.4 assets
 
-Use the [versioned release](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.3), not an unlabelled development snapshot.
+Use the [versioned release](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.4), not an unlabelled development snapshot.
 
 | Asset | Intended use |
 | --- | --- |
-| `WaveHelmSetup_1.0.3_win64.exe` | Windows x64 application installer |
-| `wavehelm-1.0.3-py3-none-any.whl` | Python distribution; not the Windows installer and not a cross-platform support claim |
-| `wavehelm-1.0.3.tar.gz` | Packaged source distribution |
-| `wavehelm-1.0.3-sbom.cdx.json` | Published CycloneDX software bill of materials |
-| `WaveHelm-1.0.3-SHA256SUMS.txt` | Published checksums for the listed release assets |
+| `WaveHelmSetup_1.0.4_win64.exe` | Windows x64 application installer |
+| `wavehelm-1.0.4-py3-none-any.whl` | Python distribution; not the Windows installer and not a cross-platform support claim |
+| `wavehelm-1.0.4.tar.gz` | Packaged source distribution, including the Windows build sources |
+| `wavehelm-1.0.4-sbom.cdx.json` | Published CycloneDX software bill of materials |
+| `WaveHelm-1.0.4-SHA256SUMS.txt` | Published checksums for the listed release assets |
 
 GitHub also provides automatic source archives. Match a downloaded file to its exact checksum entry; do not assume a checksum for one archive or package also covers another. A matching checksum is not an Authenticode verification or a reproducibility proof.
 
@@ -70,6 +70,25 @@ The source archive must contain `tests/conftest.py`, `tests/test_*.py`, and deli
 
 `MANIFEST.in` already selects the root Markdown documents and the relevant documentation formats. `pyproject.toml` uses `README.md` as package metadata. Documentation changes therefore affect later source distributions and package metadata, even when runtime code and dependency locks are untouched. Preserve historical inventories and published asset checksums; generate and verify a new inventory for a new artifact instead of reusing an old digest.
 
+## Windows executable and installer build sources
+
+The project-specific files in [`packaging/windows`](../packaging/windows) control
+the PyInstaller freeze and Inno Setup installer compilation. The directory
+contains the build script, `.spec`, Inno template, version metadata, icon, and
+README embedded in the installed program. The complete operational kit, downloaded
+tools and wheel cache, logs, private test evidence, and user-data backups are not
+part of the public source. The `1.0.4` source archive includes the public build
+files, which are also in the tagged repository.
+
+Build from the exact clean release commit on Windows x64 with CPython 3.12 x64,
+the checked-in `locks/windows-py312-runtime` bundle, and Inno Setup 7.1.x.
+Follow the [build-source README](../packaging/windows/README.md) and use an output
+directory outside the checkout. The script requires the expected 40-character
+commit SHA and refuses a dirty or mismatched source tree. It records the installed
+runtime graph, vulnerability audit, license inventory, SBOM, frozen manifest,
+and installer hash. These checks do not establish bit-for-bit reproducibility or
+a valid code signature; review the actual release evidence for those claims.
+
 ## CI and supply-chain evidence
 
 The [GitHub Actions workflow](../.github/workflows/ci.yml) configures these separate gates:
@@ -84,9 +103,15 @@ Read each job's actual result and artifact scope; workflow configuration alone i
 
 The workflow is triggered by push, pull request, or manual dispatch. Scheduled dependency rescanning and longer-term evidence archival remain separate improvements; this document does not imply that either is already enabled.
 
-## Recorded 1.0.3 qualification and remaining limits
+## Recorded qualification and remaining limits
 
-The [published release notes](release-notes-1.0.3.md) report focused regressions, Windows CI, dependency audit/SBOM, ABI checks, frozen-GUI identity, manual playback smoke tests, an in-place `1.0.2` to `1.0.3` upgrade, installed-tree comparison, and uninstall checks. These are attributed release results, not new tests performed by updating this documentation.
+The [1.0.4 release page](https://github.com/1981-teck/WaveHelm/releases/tag/v1.0.4)
+is the record for this installer and its bounded qualification. The earlier
+[1.0.3 release notes](release-notes-1.0.3.md) report focused regressions,
+Windows CI, dependency audit/SBOM, ABI checks, frozen-GUI identity, manual
+playback smoke tests, an in-place `1.0.2` to `1.0.3` upgrade, installed-tree
+comparison, and uninstall checks. Those results do not automatically apply
+to the new dependency graph or installer.
 
 The [WIC application baseline](wic-application-baseline.md) records a bounded owner-observed scenario and its remaining work. Do not turn a finite playback/resource run into a general zero-leak, all-codec, all-driver, or all-Windows-version guarantee. Keep the [roadmap](../ROADMAP.md) aligned with those limits.
 
@@ -116,8 +141,7 @@ The public homepage is user-facing. When maintaining a Store listing, use these 
 
 ## Deferred release engineering work
 
-- Public, repeatable frozen-executable build recipes.
-- Public installer automation, distinct from an already distributed installer.
+- Automated public installer builds, distinct from the included manual build sources.
 - Documented code-signing and signed-release automation; verify the actual signature before making a signing claim.
 - Verified installer-to-tag reproducibility with toolchain, native inputs, build steps, and evidence recorded.
 - Durable release-evidence archival and scheduled scanning of the locked dependency graph.

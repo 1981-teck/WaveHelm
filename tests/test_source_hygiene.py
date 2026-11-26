@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -152,6 +153,29 @@ def test_gate_ignores_binary_assets_but_rejects_invalid_text(tmp_path: Path) -> 
     report = evaluate(root, load_policy(policy_path))
     assert "utf8:asset.png" not in report["findings"]
     assert "utf8:broken.json" in report["findings"]
+
+
+def test_gate_preserves_verbatim_upstream_text_only_at_reviewed_hash(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / ".github" / "workflows").mkdir(parents=True)
+    license_path = root / "licenses" / "original.txt"
+    license_path.parent.mkdir()
+    original = b"Upstream notice with intentional space \n"
+    license_path.write_bytes(original)
+    policy_path = _write_policy(
+        tmp_path,
+        required_paths=[],
+        legacy_oversize_files={},
+        legacy_oversize_functions={},
+        legacy_mixed_line_endings=[],
+        verbatim_text_sha256={
+            "licenses/original.txt": hashlib.sha256(original).hexdigest()
+        },
+    )
+    policy = load_policy(policy_path)
+    assert evaluate(root, policy)["verdict"] == "PASS"
+    license_path.write_bytes(b"Changed upstream notice \n")
+    assert "verbatim_hash:licenses/original.txt" in evaluate(root, policy)["findings"]
 
 
 def test_gate_rejects_sensitive_key_material_by_filename(tmp_path: Path) -> None:

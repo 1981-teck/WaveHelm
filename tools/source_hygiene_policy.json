@@ -92,5 +92,13 @@
     "tools/supply_chain_policy.json",
     "tools/supply_chain_validation.py"
   ],
-  "schema": "wavehelm-source-hygiene-policy-v1"
+  "schema": "wavehelm-source-hygiene-policy-v1",
+  "verbatim_text_sha256": {
+    "src/resources/legal/licenses/Pillow-13.0.0-WHEEL-LICENSE.txt": "988ffe8ab3480b0f4e9a0ab2702bffd73d9fb6b47198043fb3ba101a62fac236",
+    "src/resources/legal/licenses/TinyTag-2.3.2-LICENSE.txt": "497f61aac3d877f48539dfc38d3c35215ba53648d0f9c4ac7fec467a0dc0cb4d",
+    "src/resources/legal/licenses/python-dateutil-4.0.0-AUTHORS.md": "56004c45a95e9ee5582ea60f9a7ee42179c8594c7b9c245bbfb4a3445b4af640",
+    "src/resources/legal/licenses/python-dateutil-4.0.0-LICENSE.txt": "ba00f51a0d92823b5a1cde27d8b5b9d2321e67ed8da9bc163eff96d5e17e577e",
+    "src/resources/legal/licenses/tzdata-2026.6-LICENSE.txt": "df58f69ea88683035d720b5375bcef0cf5aeaa98a1d098d572e0992c378deb46",
+    "src/resources/legal/licenses/tzdata-2026.6-LICENSE_APACHE.txt": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  }
 }
