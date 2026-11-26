@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 import re
@@ -43,6 +44,7 @@ class Policy:
     legacy_oversize_functions: dict[str, int]
     legacy_mixed_line_endings: frozenset[str]
     legacy_runtime_asserts: frozenset[str]
+    verbatim_text_sha256: dict[str, str]
     required_paths: tuple[str, ...]
     allowed_untracked_paths: frozenset[str]
     forbidden_parts: frozenset[str]
@@ -129,6 +131,19 @@ def _string_sequence(value: object, name: str) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _verbatim_digest_map(value: object) -> dict[str, str]:
+    if type(value) is not dict:
+        raise HygieneError("verbatim_text_sha256 must be an object")
+    result: dict[str, str] = {}
+    for path, digest in value.items():
+        if (type(path) is not str or not path or "\\" in path or path.startswith("/")
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+                or type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+            raise HygieneError("verbatim_text_sha256 contains an unsafe path or digest")
+        result[path] = digest
+    return result
+
+
 def load_policy(path: Path) -> Policy:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -155,6 +170,7 @@ def load_policy(path: Path) -> Policy:
         legacy_runtime_asserts=frozenset(
             _string_sequence(raw.get("legacy_runtime_asserts"), "legacy_runtime_asserts")
         ),
+        verbatim_text_sha256=_verbatim_digest_map(raw.get("verbatim_text_sha256", {})),
         required_paths=_string_sequence(raw.get("required_paths"), "required_paths"),
         allowed_untracked_paths=frozenset(
             _string_sequence(raw.get("allowed_untracked_paths"), "allowed_untracked_paths")
@@ -295,20 +311,27 @@ def _evaluation_state(
     return [], {}, {}, set(), set()
 
 
-def _inspect_text(path: Path, relative: str, findings: list[str]) -> bool:
+def _inspect_text(path: Path, relative: str, findings: list[str], policy: Policy) -> bool:
     if path.is_symlink():
         _append(findings, f"symlink:{relative}")
         return False
     if not _is_text_file(path):
         return False
     try:
-        text = path.read_text(encoding="utf-8")
+        data = path.read_bytes()
+        text = data.decode("utf-8")
     except UnicodeError:
         _append(findings, f"utf8:{relative}")
         return False
     except OSError as exc:
         _append(findings, f"read:{relative}:{exc}")
         return False
+    expected_digest = policy.verbatim_text_sha256.get(relative)
+    if expected_digest is not None:
+        if hashlib.sha256(data).hexdigest() != expected_digest:
+            _append(findings, f"verbatim_hash:{relative}")
+            return False
+        return True
     for line_number, line in enumerate(text.splitlines(), 1):
         if line.rstrip(" \t") != line:
             _append(findings, f"trailing_whitespace:{relative}:{line_number}")
@@ -328,7 +351,7 @@ def evaluate(root: Path, policy: Policy) -> dict[str, object]:
         relative = path.relative_to(root).as_posix()
         if _is_generated(relative, policy):
             _append(findings, f"generated:{relative}")
-        if not _inspect_text(path, relative, findings) or path.suffix != ".py":
+        if not _inspect_text(path, relative, findings, policy) or path.suffix != ".py":
             continue
         line_count, metrics, mixed, assertions = _python_metrics(root, path)
         if line_count > policy.max_file_lines:

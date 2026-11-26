@@ -92,5 +92,9 @@
     "tools/supply_chain_policy.json",
     "tools/supply_chain_validation.py"
   ],
-  "schema": "wavehelm-source-hygiene-policy-v1"
+  "schema": "wavehelm-source-hygiene-policy-v1",
+  "verbatim_text_sha256": {
+    "src/resources/legal/licenses/Pillow-13.0.0-WHEEL-LICENSE.txt": "988ffe8ab3480b0f4e9a0ab2702bffd73d9fb6b47198043fb3ba101a62fac236",
+    "src/resources/legal/licenses/TinyTag-2.3.2-LICENSE.txt": "497f61aac3d877f48539dfc38d3c35215ba53648d0f9c4ac7fec467a0dc0cb4d"
+  }
 }
