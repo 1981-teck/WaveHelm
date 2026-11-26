@@ -52,7 +52,7 @@
         "MIT.txt"
       ],
       "notes": [
-        "Requirements pin tinytag==2.2.1 to a specific MIT-licensed release and avoid the older GPL-tagged 0.x line on PyPI."
+        "Requirements pin tinytag==2.3.2 to a specific MIT-licensed release and avoid the older GPL-tagged 0.x line on PyPI."
       ]
     },
     "Pillow": {
