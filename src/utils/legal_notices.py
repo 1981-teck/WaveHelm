@@ -29,11 +29,11 @@ _NOTICE_FILES = (
 
 _SOURCE_OFFER_TEMPLATE = """WaveHelm LGPL source-offer checklist
 
-This file is a practical reminder for the final Microsoft Store build.
+This file is a practical reminder for packaged WaveHelm releases.
 It is not legal advice and it is not a substitute for collecting the exact
 upstream source archives and notices for the exact binaries you redistribute.
 
-Before shipping the final build, complete at least these actions:
+Before distributing each build, complete at least these actions:
 
 1. Freeze the exact wheel / binary versions bundled in the release.
 2. Archive the complete corresponding source code for the LGPL libraries you
